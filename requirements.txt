@@ -2,20 +2,22 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
 
-# Database
+# Database — SQLModel unifica SQLAlchemy + Pydantic
+sqlmodel>=0.0.22
 sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.9
+psycopg[binary]>=3.1.0
 alembic>=1.14.0
 
 # Auth (se usa en Sprint 2, pero se instala ya)
 python-jose[cryptography]>=3.3.0
 httpx>=0.28.0
 
-# Validation
+# Validation — pydantic viene con sqlmodel, pero lo declaramos explícito
 pydantic>=2.10.0
 pydantic-settings>=2.7.0
 
 # Utils
+python-dotenv>=1.0.0
 python-multipart>=0.0.18
 
 # Dev / Test
