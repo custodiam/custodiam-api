@@ -8,8 +8,8 @@ sqlalchemy>=2.0.0
 psycopg[binary]>=3.1.0
 alembic>=1.14.0
 
-# Auth (se usa en Sprint 2, pero se instala ya)
-python-jose[cryptography]>=3.3.0
+# Auth — JWT offline validation con PyJWT + PyJWKClient
+PyJWT[crypto]>=2.11.0
 httpx>=0.28.0
 
 # Validation — pydantic viene con sqlmodel, pero lo declaramos explícito
