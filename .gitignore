@@ -32,3 +32,7 @@ htmlcov/
 
 # Alembic
 alembic/versions/*.pyc
+
+# Claude Code (local, no commitear)
+.claude/
+CLAUDE.md

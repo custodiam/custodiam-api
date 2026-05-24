@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.routers import auth
 
 app = FastAPI(
     title="Custodiam API",
@@ -42,6 +43,8 @@ def health():
     """Healthcheck para Docker y monitorización."""
     return {"status": "healthy"}
 
+
+app.include_router(auth.router, prefix=f"/api/{settings.api_version}")
 
 # Routers se incluirán según se desarrollen:
 # from app.routers import voluntarios, servicios, inventario

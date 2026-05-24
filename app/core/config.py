@@ -22,5 +22,18 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
+    @property
+    def keycloak_issuer(self) -> str:
+        """Issuer esperado en los tokens JWT (URL pública: la que Keycloak pone en `iss`)."""
+        return f"{self.keycloak_public_url}/realms/{self.keycloak_realm}"
+
+    @property
+    def keycloak_jwks_url(self) -> str:
+        """Endpoint JWKS para descargar claves públicas (URL interna: red Docker)."""
+        return (
+            f"{self.keycloak_url}/realms/{self.keycloak_realm}"
+            f"/protocol/openid-connect/certs"
+        )
+
 
 settings = Settings()

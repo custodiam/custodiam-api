@@ -1,17 +1,25 @@
 """Alembic environment configuration.
 
-Lee DATABASE_URL del entorno en lugar de usar el valor hardcodeado de alembic.ini.
+Lee DATABASE_URL del archivo .env (via python-dotenv) en lugar de usar
+el valor hardcodeado de alembic.ini.
+Usa SQLModel.metadata (que incluye todos los modelos registrados).
 """
+
 import os
 from logging.config import fileConfig
 
+from dotenv import load_dotenv
+
+load_dotenv()  # Cargar .env ANTES de leer DATABASE_URL
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from sqlmodel import SQLModel
 
-# Importar Base para que Alembic conozca los modelos
-# from app.core.database import Base
-# target_metadata = Base.metadata
-target_metadata = None  # Se reemplaza cuando haya modelos (guía 21)
+# Importar TODOS los modelos para que SQLModel.metadata los registre
+import app.models  # noqa: F401
+
+target_metadata = SQLModel.metadata
 
 config = context.config
 
