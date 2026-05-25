@@ -11,6 +11,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWKClient
 
 from app.core.config import settings
+from app.core.permissions import Permission, permissions_for_roles
 from app.schemas.auth import CurrentUser
 
 oauth2_scheme = OAuth2PasswordBearer(
@@ -81,7 +82,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
 
 
 def require_role(allowed_roles: list[str]):
-    """Factory de dependency: 403 si el usuario no tiene ninguno de los roles."""
+    """Factory de dependency: 403 si el usuario no tiene ninguno de los roles.
+
+    Reservado para casos donde la matriz de permisos quede sobredimensionada
+    (típicamente: endpoints puramente técnicos de ``admin``). Para todo lo
+    demás, preferir ``require_permission``.
+    """
 
     async def _check_role(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
         if not user.has_any_role(allowed_roles):
@@ -92,3 +98,30 @@ def require_role(allowed_roles: list[str]):
         return user
 
     return _check_role
+
+
+def has_permission(user: CurrentUser, permission: Permission) -> bool:
+    """True si alguno de los roles del usuario otorga el permiso."""
+
+    return permission in permissions_for_roles(user.roles)
+
+
+def require_permission(permission: Permission):
+    """Factory de dependency: 403 si el usuario no tiene el permiso.
+
+    Patrón preferido sobre ``require_role`` (ver decisión 12 del documento
+    ``docs/trabajo/backlog/RBAC_v0.1.0.md``). Los endpoints declaran qué
+    permiso necesitan; el mapa rol→permiso vive en ``app/core/permissions.py``.
+    """
+
+    async def _check_permission(
+        user: CurrentUser = Depends(get_current_user),
+    ) -> CurrentUser:
+        if not has_permission(user, permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Se requiere el permiso: {permission.value}",
+            )
+        return user
+
+    return _check_permission
