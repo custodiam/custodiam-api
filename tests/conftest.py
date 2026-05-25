@@ -66,3 +66,23 @@ def jefe_client(client):
     )
     yield client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_for_role(client):
+    """Factoría para autenticar el TestClient como un rol arbitrario.
+
+    Útil en los tests de matriz RBAC, donde un mismo test cruza todos
+    los roles contra un mismo endpoint.
+    """
+
+    def _factory(roles: list[str]):
+        app.dependency_overrides[get_current_user] = lambda: _make_fake_user(
+            sub=f"user-{'-'.join(roles)}",
+            preferred_username="-".join(roles),
+            roles=roles,
+        )
+        return client
+
+    yield _factory
+    app.dependency_overrides.clear()
