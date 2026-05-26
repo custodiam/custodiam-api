@@ -7,15 +7,29 @@ primer token, por lo que los tests funcionan sin Keycloak corriendo.
 
 import jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2AuthorizationCodeBearer
 from jwt import PyJWKClient
 
 from app.core.config import settings
 from app.core.permissions import Permission, permissions_for_roles
 from app.schemas.auth import CurrentUser
 
-oauth2_scheme = OAuth2PasswordBearer(
+# OAuth2AuthorizationCodeBearer documenta el flujo real (Authorization
+# Code + PKCE) en el OpenAPI generado, así que Swagger UI muestra el
+# botón "Authorize" como redirect-and-callback en lugar del formulario
+# user+password incorrecto que dibujaría OAuth2PasswordBearer. La
+# extracción del header `Authorization: Bearer <token>` en runtime es
+# idéntica entre los dos schemes.
+oauth2_scheme = OAuth2AuthorizationCodeBearer(
+    authorizationUrl=(
+        f"{settings.keycloak_public_url}/realms/{settings.keycloak_realm}"
+        f"/protocol/openid-connect/auth"
+    ),
     tokenUrl=(
+        f"{settings.keycloak_public_url}/realms/{settings.keycloak_realm}"
+        f"/protocol/openid-connect/token"
+    ),
+    refreshUrl=(
         f"{settings.keycloak_public_url}/realms/{settings.keycloak_realm}"
         f"/protocol/openid-connect/token"
     ),
