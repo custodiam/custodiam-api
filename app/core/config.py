@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     keycloak_url: str = "http://localhost:8080"
     keycloak_realm: str = "custodiam"
     keycloak_public_url: str = "http://localhost:8080"
+    # Authorized Party esperado en el claim `azp` del JWT. Keycloak lo
+    # rellena con el client_id que solicitó el token. Coincide con el
+    # cliente público declarado en `realm-custodiam.json` para la app
+    # Flutter (`custodiam-app`). Si Keycloak emite un token para otro
+    # cliente del realm, el backend lo rechaza.
+    keycloak_authorized_party: str = "custodiam-app"
 
     # ntfy
     ntfy_url: str = "http://localhost:8090"

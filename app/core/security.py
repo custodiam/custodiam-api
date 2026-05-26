@@ -36,7 +36,13 @@ def _decode_token(token: str) -> dict:
             options={
                 "verify_exp": True,
                 "verify_iss": True,
-                # Keycloak pone "account" como aud por defecto, no nuestro client_id.
+                # Keycloak pone "account" como aud por defecto. En lugar
+                # de habilitar verify_aud (que exigiría configurar un
+                # audience-resolve mapper en Keycloak), validamos `azp`
+                # (Authorized Party) abajo. El `azp` lo rellena Keycloak
+                # con el client_id del cliente que solicitó el token,
+                # así que es la fuente fiable para restringir la API a
+                # tokens emitidos para `custodiam-app`.
                 "verify_aud": False,
                 "require": ["exp", "iss", "sub"],
             },
@@ -63,6 +69,20 @@ def _decode_token(token: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token no válido: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Defensa en profundidad: rechazar tokens emitidos para otros clientes
+    # del realm. Sin esta verificación, cualquier futuro cliente OAuth del
+    # mismo realm podría obtener tokens válidos para este backend.
+    azp = payload.get("azp")
+    if azp != settings.keycloak_authorized_party:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                f"Token no emitido para esta aplicación "
+                f"(azp={azp!r}, esperado={settings.keycloak_authorized_party!r})"
+            ),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
