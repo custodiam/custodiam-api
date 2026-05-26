@@ -5,13 +5,24 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Configuración centralizada via variables de entorno."""
 
-    # Base de datos
-    database_url: str = "postgresql://custodiam:password@localhost:5432/custodiam"
+    # Base de datos. El prefijo `+psycopg` es obligatorio: el dialect
+    # canónico para psycopg 3 en SQLAlchemy 2.x. Sin él, SQLAlchemy
+    # busca psycopg2 (no instalado) y falla con un ImportError opaco
+    # antes de que ninguna ruta responda.
+    database_url: str = (
+        "postgresql+psycopg://custodiam:password@localhost:5432/custodiam"
+    )
 
     # Keycloak
     keycloak_url: str = "http://localhost:8080"
     keycloak_realm: str = "custodiam"
     keycloak_public_url: str = "http://localhost:8080"
+    # Authorized Party esperado en el claim `azp` del JWT. Keycloak lo
+    # rellena con el client_id que solicitó el token. Coincide con el
+    # cliente público declarado en `realm-custodiam.json` para la app
+    # Flutter (`custodiam-app`). Si Keycloak emite un token para otro
+    # cliente del realm, el backend lo rechaza.
+    keycloak_authorized_party: str = "custodiam-app"
 
     # ntfy
     ntfy_url: str = "http://localhost:8090"
