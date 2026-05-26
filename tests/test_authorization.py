@@ -42,40 +42,38 @@ def test_me_permissions_estan_ordenados_alfabeticamente(authenticated_client):
     assert perms == sorted(perms)
 
 
-def test_endpoint_voluntarios_test_sin_token(client):
-    response = client.get("/api/v1/voluntarios/test")
+def test_endpoint_voluntarios_listar_sin_token(client):
+    response = client.get("/api/v1/voluntarios")
     assert response.status_code == 401
 
 
-def test_endpoint_voluntarios_test_como_voluntario_tiene_permiso(
+def test_endpoint_voluntarios_listar_como_voluntario_tiene_permiso(
     authenticated_client,
 ):
     # voluntario tiene voluntarios.listar (decisión 4 + matriz E02).
-    response = authenticated_client.get("/api/v1/voluntarios/test")
+    response = authenticated_client.get("/api/v1/voluntarios")
     assert response.status_code == 200
-    data = response.json()
-    assert data["permission_required"] == Permission.VOLUNTARIOS_LISTAR.value
 
 
-def test_endpoint_voluntarios_test_como_admin_puro_es_403(client_for_role):
+def test_endpoint_voluntarios_listar_como_admin_puro_es_403(client_for_role):
     # admin puro NO tiene voluntarios.listar (decisión 1).
     c = client_for_role(["admin"])
-    response = c.get("/api/v1/voluntarios/test")
+    response = c.get("/api/v1/voluntarios")
     assert response.status_code == 403
     assert Permission.VOLUNTARIOS_LISTAR.value in response.json()["detail"]
 
 
-def test_endpoint_voluntarios_test_como_practicas_es_403(client_for_role):
+def test_endpoint_voluntarios_listar_como_practicas_es_403(client_for_role):
     # voluntario_practicas no aparece en la matriz de voluntarios.listar.
     c = client_for_role(["voluntario_practicas"])
-    response = c.get("/api/v1/voluntarios/test")
+    response = c.get("/api/v1/voluntarios")
     assert response.status_code == 403
 
 
-def test_endpoint_voluntarios_test_como_tesorero_tiene_permiso(client_for_role):
+def test_endpoint_voluntarios_listar_como_tesorero_tiene_permiso(client_for_role):
     # tesorero tiene voluntarios.listar (decisión 8: lectura amplia).
     c = client_for_role(["tesorero"])
-    response = c.get("/api/v1/voluntarios/test")
+    response = c.get("/api/v1/voluntarios")
     assert response.status_code == 200
 
 

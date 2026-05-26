@@ -1,0 +1,304 @@
+"""Router del módulo voluntarios (EN-02-02).
+
+Endpoints REST del CU-10 (alta), CU-11 (modificación admin y self),
+CU-13 (consulta del propio perfil) y US-02-09 (lista). El soft delete
+y la anonimización RGPD viven en dos endpoints diferenciados.
+
+La autorización es declarativa con :func:`require_permission`: el mapa
+rol→permisos vive en :mod:`app.core.permissions`. Las reglas de
+propiedad (p. ej. "solo me edito a mí mismo") se enforzan en el
+servicio comparando `keycloak_id` contra el `sub` del JWT.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlmodel import Session
+
+from app.core.database import get_session
+from app.core.permissions import Permission
+from app.core.security import get_current_user, require_permission
+from app.models.voluntario import EstadoVoluntario
+from app.schemas.auth import CurrentUser
+from app.schemas.voluntario import (
+    VoluntarioCreate,
+    VoluntarioResponse,
+    VoluntarioSummary,
+    VoluntarioUpdateAdmin,
+    VoluntarioUpdateSelf,
+)
+from app.services import voluntarios as service
+
+router = APIRouter(prefix="/voluntarios", tags=["voluntarios"])
+
+
+SessionDep = Annotated[Session, Depends(get_session)]
+
+
+# ---------------------------------------------------------------------------
+# Lista
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "",
+    response_model=list[VoluntarioSummary],
+    summary="Listar voluntarios (US-02-09)",
+)
+def listar_voluntarios(
+    response: Response,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_LISTAR))
+    ],
+    skip: int = Query(0, ge=0, description="Voluntarios a saltar (paginación)"),
+    limit: int = Query(50, ge=1, le=200, description="Tamaño de página (máx. 200)"),
+    q: str | None = Query(None, description="Búsqueda por nombre, email o DNI"),
+    estado: EstadoVoluntario | None = Query(
+        None, description="Filtrar por estado (activo, baja, suspendido)"
+    ),
+    rol_id: uuid.UUID | None = Query(
+        None, description="Solo voluntarios con este rol activo"
+    ),
+):
+    """Lista paginada de voluntarios con filtros opcionales.
+
+    El total se devuelve en el header ``X-Total-Count`` para que el
+    cliente pueda paginar sin emitir un HEAD adicional.
+    """
+
+    items, total = service.listar(
+        session,
+        skip=skip,
+        limit=limit,
+        q=q,
+        estado=estado,
+        rol_id=rol_id,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Self-service (rutas con `/me` antes de `/{id}`)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/me",
+    response_model=VoluntarioResponse,
+    summary="Consultar mi perfil (CU-13)",
+)
+def obtener_mi_perfil(
+    session: SessionDep,
+    user: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_VER_PROPIO))
+    ],
+):
+    try:
+        return service.obtener_propio(session, user.sub)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "No hay un voluntario en BD vinculado al usuario actual. "
+                "Pide al administrador que te dé de alta."
+            ),
+        ) from e
+
+
+@router.patch(
+    "/me",
+    response_model=VoluntarioResponse,
+    summary="Editar mis datos de contacto (CU-11 A)",
+)
+def actualizar_mi_perfil(
+    data: VoluntarioUpdateSelf,
+    session: SessionDep,
+    user: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.VOLUNTARIOS_EDITAR_PROPIO)),
+    ],
+):
+    try:
+        service.actualizar_propio(session, user.sub, data)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hay un voluntario en BD vinculado al usuario actual.",
+        ) from e
+    except service.EmailDuplicado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Email ya registrado: {e}",
+        ) from e
+
+    return service.obtener_propio(session, user.sub)
+
+
+# ---------------------------------------------------------------------------
+# CRUD admin
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "",
+    response_model=VoluntarioResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Alta de voluntario (CU-10, US-02-01)",
+)
+def crear_voluntario(
+    data: VoluntarioCreate,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_CREAR))
+    ],
+):
+    """Crea un voluntario en BD.
+
+    La sincronización con Keycloak (creación del usuario, asignación de
+    rol inicial, envío de credenciales) la añade EN-02-03 envolviendo
+    esta llamada en una transacción de dos fases.
+    """
+
+    try:
+        v = service.crear(session, data=data)
+    except service.DniDuplicado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"DNI ya registrado: {e}",
+        ) from e
+    except service.EmailDuplicado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Email ya registrado: {e}",
+        ) from e
+
+    # Recargamos con relaciones para que el response_model encuentre las
+    # listas vacías y no `MissingGreenlet` al lazy-loadear fuera de la
+    # request. En POST son siempre listas vacías porque el voluntario
+    # acaba de crearse, pero la serialización las necesita.
+    return service.obtener(session, v.id)
+
+
+@router.get(
+    "/{voluntario_id}",
+    response_model=VoluntarioResponse,
+    summary="Ver ficha completa de un voluntario",
+)
+def obtener_voluntario(
+    voluntario_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_VER_FICHA))
+    ],
+):
+    try:
+        return service.obtener(session, voluntario_id)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {e}",
+        ) from e
+
+
+@router.patch(
+    "/{voluntario_id}",
+    response_model=VoluntarioResponse,
+    summary="Modificar voluntario (CU-11 B, US-02-02)",
+)
+def actualizar_voluntario(
+    voluntario_id: uuid.UUID,
+    data: VoluntarioUpdateAdmin,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_EDITAR))
+    ],
+):
+    try:
+        service.actualizar_admin(session, voluntario_id, data)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {e}",
+        ) from e
+    except service.DniDuplicado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"DNI ya registrado: {e}",
+        ) from e
+    except service.EmailDuplicado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Email ya registrado: {e}",
+        ) from e
+
+    return service.obtener(session, voluntario_id)
+
+
+@router.delete(
+    "/{voluntario_id}",
+    response_model=VoluntarioResponse,
+    summary="Dar de baja a un voluntario (soft delete)",
+)
+def dar_baja_voluntario(
+    voluntario_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_DAR_BAJA))
+    ],
+):
+    """Soft delete operativo.
+
+    Mantiene el histórico de actividad (horas, servicios, equipamiento)
+    y el `keycloak_id` para poder reactivar. Para borrar PII de verdad,
+    usar el endpoint específico de anonimización (Art. 17 RGPD).
+    """
+
+    try:
+        service.dar_baja(session, voluntario_id)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {e}",
+        ) from e
+
+    return service.obtener(session, voluntario_id)
+
+
+@router.post(
+    "/{voluntario_id}/anonimizar",
+    response_model=VoluntarioResponse,
+    summary="Anonimizar voluntario (Art. 17 RGPD)",
+)
+def anonimizar_voluntario(
+    voluntario_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.SISTEMA_EXPORTAR_RGPD)),
+    ],
+):
+    """Anonimización irreversible de los datos personales.
+
+    Permiso `sistema.exportar_rgpd` restringido a jefe_agrupacion,
+    coordinador, secretario y admin. Se invoca solo a petición expresa
+    del titular del dato (formulario de ejercicio de derechos ARCO+).
+    """
+
+    try:
+        service.anonimizar(session, voluntario_id)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {e}",
+        ) from e
+
+    return service.obtener(session, voluntario_id)
+
+
+# Re-export para que main.py lo importe directamente.
+__all__ = ["router", "get_current_user"]
