@@ -26,25 +26,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
         with:
-          python-version: '3.11'
-          cache: 'pip'
-      
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-      
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Sync dependencies (including dev)
+        run: uv sync --all-extras --frozen
+
       - name: Lint with ruff
-        run: ruff check app/ tests/
-      
+        run: uv run ruff check app/ tests/
+
       - name: Test with pytest
         env:
-          DATABASE_URL: postgresql://custodiam:test@localhost:5432/custodiam_test
-        run: pytest tests/ -v --cov=app
+          DATABASE_URL: postgresql+psycopg://custodiam:test@localhost:5432/custodiam_test
+        run: uv run pytest tests/ -v --cov=app
 
   build-docker:
     runs-on: ubuntu-latest
@@ -62,7 +62,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
