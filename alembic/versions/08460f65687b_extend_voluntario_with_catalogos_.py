@@ -28,6 +28,7 @@ Fase 4 — Drop tabla `formaciones` (creada en revision 0f59798cd66b,
         vacía sin datos productivos; las certificaciones de formación
         pasan a `acreditaciones` con categoria='formacion_interna').
 """
+import uuid
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -312,12 +313,13 @@ def upgrade() -> None:
     # ---------------------------------------------------------------- #
     # Fase 3 — Seed catálogos (data migration)
     # ---------------------------------------------------------------- #
-    # Los UUIDs se generan en Python con sa.text('gen_random_uuid()')
-    # — extensión pgcrypto. Si no está habilitada en la BD, se puede
-    # sustituir por uuid_generate_v4() (extensión uuid-ossp) o por
-    # uuid.uuid4() generado en Python e insertado como literal.
-
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+    # Los UUIDs se generan en Python con uuid.uuid4(). Evitamos
+    # depender de extensiones PostgreSQL (pgcrypto / uuid-ossp) en la
+    # data migration: con bulk_insert(), SQLAlchemy no sustituye
+    # objetos sa.text() dentro de los parámetros (los pasa como
+    # TextClause y el driver psycopg falla con "cannot adapt type
+    # 'TextClause'"). uuid.uuid4() devuelve un UUID nativo Python que
+    # psycopg sabe adaptar a la columna sa.Uuid().
 
     tipos_acreditacion_table = sa.table(
         "tipos_acreditacion",
@@ -333,7 +335,7 @@ def upgrade() -> None:
         tipos_acreditacion_table,
         [
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CARNET_CONDUCIR",
                 "nombre": "Carnet de conducir",
                 "descripcion": "Permiso de conducción oficial emitido por la DGT.",
@@ -345,7 +347,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "ESS_SANITARIO",
                 "nombre": "ESS sanitario",
                 "descripcion": (
@@ -357,7 +359,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "ADR_MERCANCIAS_PELIGROSAS",
                 "nombre": "ADR Mercancías Peligrosas",
                 "descripcion": "Acreditación ADR para transporte de mercancías peligrosas.",
@@ -368,7 +370,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "MANIPULADOR_ALIMENTOS",
                 "nombre": "Manipulador de alimentos",
                 "descripcion": "Certificado oficial de manipulador de alimentos.",
@@ -377,7 +379,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CURSO_DEA",
                 "nombre": "Curso de uso de DEA",
                 "descripcion": (
@@ -389,7 +391,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CURSO_PROTECCION_CIVIL",
                 "nombre": "Curso de Protección Civil",
                 "descripcion": "Curso interno genérico de Protección Civil.",
@@ -401,7 +403,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "JORNADA_RESCATE_VEHICULOS",
                 "nombre": "Jornada de rescate en vehículos",
                 "descripcion": "Jornada formativa interna sobre rescate vehicular.",
@@ -410,7 +412,7 @@ def upgrade() -> None:
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "OTRO",
                 "nombre": "Otra acreditación",
                 "descripcion": "Tipo genérico para acreditaciones no catalogadas todavía.",
@@ -433,56 +435,56 @@ def upgrade() -> None:
         tipos_equipamiento_table,
         [
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CAMISA",
                 "nombre": "Camisa",
                 "sistema_tallas": "XS-XXXL",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "POLO",
                 "nombre": "Polo",
                 "sistema_tallas": "XS-XXXL",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CHAQUETA",
                 "nombre": "Chaqueta",
                 "sistema_tallas": "XS-XXXL",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "PANTALON",
                 "nombre": "Pantalón",
                 "sistema_tallas": "36-50",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "BOTAS",
                 "nombre": "Botas",
                 "sistema_tallas": "36-50",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CASCO",
                 "nombre": "Casco",
                 "sistema_tallas": "S-XL",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "GUANTES",
                 "nombre": "Guantes",
                 "sistema_tallas": "S-XL",
                 "activo": True,
             },
             {
-                "id": sa.text("gen_random_uuid()"),
+                "id": uuid.uuid4(),
                 "codigo": "CHALECO",
                 "nombre": "Chaleco reflectante",
                 "sistema_tallas": "XS-XXXL",
