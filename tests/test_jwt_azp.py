@@ -133,3 +133,39 @@ def test_decode_token_respects_custom_authorized_party(monkeypatch):
         _decode_token("dummy-token")
     assert exc_info.value.status_code == 401
     assert "una-app-distinta" in str(exc_info.value.detail)
+
+
+def test_me_endpoint_rejects_wrong_azp_end_to_end(monkeypatch, client):
+    """Same gate as the four tests above, but reached through the real
+    HTTP path: GET `/api/v1/me` with an `Authorization: Bearer ...`
+    header, no `dependency_overrides[get_current_user]` shortcut.
+
+    The previous four tests call `_decode_token` directly. They cover
+    every refactor that weakens the rejection logic itself, but they
+    do NOT cover the case where a future refactor decouples
+    `get_current_user` from `_decode_token` (e.g. replacing the call
+    with a different validator). If that happens, the unit-level
+    tests above would keep passing while the production path would
+    let bad tokens through unnoticed.
+
+    This test exercises the full FastAPI dependency chain
+    (`oauth2_scheme` -> `get_current_user` -> `_decode_token` -> `azp`
+    check) and locks the wiring in place. Removing or replacing the
+    `_decode_token` call inside `get_current_user` makes this test
+    fail because the stub installed by `_stub_token_decoding` only
+    affects `jwt.decode`, so any replacement validator would see a
+    token signature it cannot verify and would return its own
+    failure mode — not the one this test asserts.
+    """
+    payload = _base_payload(azp="cliente-malicioso")
+    _stub_token_decoding(monkeypatch, payload)
+
+    response = client.get(
+        "/api/v1/me",
+        headers={"Authorization": "Bearer any-non-empty-token"},
+    )
+
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert "cliente-malicioso" in detail
+    assert settings.keycloak_authorized_party in detail
