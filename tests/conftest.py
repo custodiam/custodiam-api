@@ -39,6 +39,7 @@ from app.models.rol import Rol
 from app.models.tipo_acreditacion import CategoriaAcreditacion, TipoAcreditacion
 from app.models.tipo_equipamiento import TipoEquipamiento
 from app.schemas.auth import CurrentUser
+from app.services.keycloak_admin import KeycloakAdminClient, get_keycloak_admin
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
@@ -150,14 +151,87 @@ def db_session(test_engine) -> Generator[Session, None, None]:
         conn.commit()
 
 
+class FakeKeycloakAdmin(KeycloakAdminClient):
+    """Sustituto sin red para `KeycloakAdminClient` en tests.
+
+    Mantiene la misma firma pública para que los routers no distingan
+    entre el cliente real y el fake. Registra todas las llamadas en
+    listas internas para que los tests puedan asertar.
+    """
+
+    def __init__(self, *, fail_on: set[str] | None = None) -> None:
+        # No llamamos a `super().__init__()` para no abrir sesión httpx.
+        self._fail_on = fail_on or set()
+        self.usuarios_creados: list[dict] = []
+        self.usuarios_desactivados: list[str] = []
+        self.roles_asignados: list[tuple[str, str]] = []
+        self.roles_revocados: list[tuple[str, str]] = []
+        self._next_kc_id = 1
+
+    @property
+    def enabled(self) -> bool:  # type: ignore[override]
+        return True
+
+    def crear_usuario(  # type: ignore[override]
+        self,
+        *,
+        username: str,
+        email: str | None,
+        given_name: str,
+        family_name: str,
+        password_temporal: str | None = None,
+    ) -> str | None:
+        if "crear" in self._fail_on:
+            from app.services.keycloak_admin import KeycloakAdminError
+
+            raise KeycloakAdminError("fake_crear")
+        kc_id = f"kc-fake-{self._next_kc_id:04d}"
+        self._next_kc_id += 1
+        self.usuarios_creados.append(
+            {
+                "id": kc_id,
+                "username": username,
+                "email": email,
+                "given_name": given_name,
+                "family_name": family_name,
+            }
+        )
+        return kc_id
+
+    def desactivar_usuario(self, keycloak_id: str) -> None:  # type: ignore[override]
+        if "desactivar" in self._fail_on:
+            from app.services.keycloak_admin import KeycloakAdminError
+
+            raise KeycloakAdminError("fake_desactivar")
+        self.usuarios_desactivados.append(keycloak_id)
+
+    def asignar_rol_realm(  # type: ignore[override]
+        self, keycloak_id: str, role_name: str
+    ) -> None:
+        self.roles_asignados.append((keycloak_id, role_name))
+
+    def quitar_rol_realm(  # type: ignore[override]
+        self, keycloak_id: str, role_name: str
+    ) -> None:
+        self.roles_revocados.append((keycloak_id, role_name))
+
+
 @pytest.fixture
-def client(db_session) -> Generator[TestClient, None, None]:
-    """TestClient con `get_session` apuntado a la BD de tests."""
+def fake_keycloak_admin() -> FakeKeycloakAdmin:
+    """Instancia compartida por el TestClient durante un test."""
+
+    return FakeKeycloakAdmin()
+
+
+@pytest.fixture
+def client(db_session, fake_keycloak_admin) -> Generator[TestClient, None, None]:
+    """TestClient con `get_session` y `get_keycloak_admin` aislados."""
 
     def _override_get_session():
         yield db_session
 
     app.dependency_overrides[get_session] = _override_get_session
+    app.dependency_overrides[get_keycloak_admin] = lambda: fake_keycloak_admin
     try:
         yield TestClient(app)
     finally:

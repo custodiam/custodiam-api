@@ -31,11 +31,17 @@ from app.schemas.voluntario import (
     VoluntarioUpdateSelf,
 )
 from app.services import voluntarios as service
+from app.services.keycloak_admin import (
+    KeycloakAdminClient,
+    KeycloakAdminError,
+    get_keycloak_admin,
+)
 
 router = APIRouter(prefix="/voluntarios", tags=["voluntarios"])
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+KeycloakAdminDep = Annotated[KeycloakAdminClient, Depends(get_keycloak_admin)]
 
 
 # ---------------------------------------------------------------------------
@@ -153,19 +159,55 @@ def actualizar_mi_perfil(
 def crear_voluntario(
     data: VoluntarioCreate,
     session: SessionDep,
+    kc_admin: KeycloakAdminDep,
     _: Annotated[
         CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_CREAR))
     ],
 ):
-    """Crea un voluntario en BD.
+    """Crea un voluntario en BD y, si la Admin API está configurada,
+    también en Keycloak.
 
-    La sincronización con Keycloak (creación del usuario, asignación de
-    rol inicial, envío de credenciales) la añade EN-02-03 envolviendo
-    esta llamada en una transacción de dos fases.
+    Orden de operaciones (EN-02-03):
+
+    1. Validar reglas de dominio y unicidad (DNI, email) en BD.
+    2. Crear el usuario en Keycloak. Si falla, abortamos sin tocar BD
+       para evitar voluntarios huérfanos sin cuenta. El cliente está
+       diseñado para devolver ``None`` en modo deshabilitado (sin
+       credenciales de admin), en cuyo caso seguimos sin sincronizar.
+    3. Crear el voluntario en BD con el `keycloak_id` recién obtenido.
     """
 
+    # 1. Validación previa (sin escribir).
+    if data.dni and _exists_in_db_dni(session, data.dni):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"DNI ya registrado: {data.dni}",
+        )
+    if data.email and _exists_in_db_email(session, data.email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Email ya registrado: {data.email}",
+        )
+
+    # 2. Sincronización con Keycloak (si está habilitada).
+    username = _username_para_keycloak(data)
+    keycloak_id: str | None = None
     try:
-        v = service.crear(session, data=data)
+        keycloak_id = kc_admin.crear_usuario(
+            username=username,
+            email=data.email,
+            given_name=data.nombre.split(" ", 1)[0],
+            family_name=" ".join(data.nombre.split(" ", 1)[1:]) or data.nombre,
+        )
+    except KeycloakAdminError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Sincronización con Keycloak fallida: {e}",
+        ) from e
+
+    # 3. Persistencia en BD.
+    try:
+        v = service.crear(session, data=data, keycloak_id=keycloak_id)
     except service.DniDuplicado as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -182,6 +224,34 @@ def crear_voluntario(
     # request. En POST son siempre listas vacías porque el voluntario
     # acaba de crearse, pero la serialización las necesita.
     return service.obtener(session, v.id)
+
+
+def _exists_in_db_dni(session: Session, dni: str) -> bool:
+    from app.repositories import voluntarios as repo
+
+    return repo.exists_with_dni(session, dni)
+
+
+def _exists_in_db_email(session: Session, email: str) -> bool:
+    from app.repositories import voluntarios as repo
+
+    return repo.exists_with_email(session, email)
+
+
+def _username_para_keycloak(data: VoluntarioCreate) -> str:
+    """Construye un `username` razonable para Keycloak.
+
+    Preferimos el DNI si está, porque es estable y único; si no, el
+    email; si no, una transliteración del nombre (último recurso, que
+    el admin debería corregir manualmente).
+    """
+
+    if data.dni:
+        return data.dni.lower()
+    if data.email:
+        return data.email
+    # Heurística mínima — el admin debería normalizar después si quiere.
+    return data.nombre.lower().replace(" ", ".")
 
 
 @router.get(
@@ -247,6 +317,7 @@ def actualizar_voluntario(
 def dar_baja_voluntario(
     voluntario_id: uuid.UUID,
     session: SessionDep,
+    kc_admin: KeycloakAdminDep,
     _: Annotated[
         CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_DAR_BAJA))
     ],
@@ -256,15 +327,32 @@ def dar_baja_voluntario(
     Mantiene el histórico de actividad (horas, servicios, equipamiento)
     y el `keycloak_id` para poder reactivar. Para borrar PII de verdad,
     usar el endpoint específico de anonimización (Art. 17 RGPD).
+
+    Si la Admin API de Keycloak está configurada, también desactiva la
+    cuenta del usuario en Keycloak (`enabled=false`). La cuenta no se
+    borra: reactivar al voluntario más adelante solo requiere volver a
+    poner `enabled=true`.
     """
 
     try:
-        service.dar_baja(session, voluntario_id)
+        voluntario = service.dar_baja(session, voluntario_id)
     except service.VoluntarioNoEncontrado as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Voluntario no encontrado: {e}",
         ) from e
+
+    if voluntario.keycloak_id:
+        try:
+            kc_admin.desactivar_usuario(voluntario.keycloak_id)
+        except KeycloakAdminError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Voluntario marcado de baja en BD pero la "
+                    f"desactivación en Keycloak falló: {e}"
+                ),
+            ) from e
 
     return service.obtener(session, voluntario_id)
 
@@ -277,6 +365,7 @@ def dar_baja_voluntario(
 def anonimizar_voluntario(
     voluntario_id: uuid.UUID,
     session: SessionDep,
+    kc_admin: KeycloakAdminDep,
     _: Annotated[
         CurrentUser,
         Depends(require_permission(Permission.SISTEMA_EXPORTAR_RGPD)),
@@ -287,15 +376,35 @@ def anonimizar_voluntario(
     Permiso `sistema.exportar_rgpd` restringido a jefe_agrupacion,
     coordinador, secretario y admin. Se invoca solo a petición expresa
     del titular del dato (formulario de ejercicio de derechos ARCO+).
+
+    Si la Admin API de Keycloak está configurada, también desactiva la
+    cuenta en Keycloak antes de borrar el `keycloak_id` de la fila en BD.
     """
 
+    # Capturamos el `keycloak_id` ANTES de anonimizar porque el service
+    # lo pone a NULL en BD.
     try:
-        service.anonimizar(session, voluntario_id)
+        actual = service.obtener(session, voluntario_id)
     except service.VoluntarioNoEncontrado as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Voluntario no encontrado: {e}",
         ) from e
+    keycloak_id_antes = actual.keycloak_id
+
+    service.anonimizar(session, voluntario_id)
+
+    if keycloak_id_antes:
+        try:
+            kc_admin.desactivar_usuario(keycloak_id_antes)
+        except KeycloakAdminError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Voluntario anonimizado en BD pero la desactivación "
+                    f"en Keycloak falló: {e}"
+                ),
+            ) from e
 
     return service.obtener(session, voluntario_id)
 
