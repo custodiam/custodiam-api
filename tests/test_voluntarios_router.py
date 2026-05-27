@@ -407,3 +407,254 @@ class TestMatrizRbacResumida:
             == 403
         )
         assert c.delete(f"{BASE}/{voluntario.id}").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# EN-02-05: asignación / baja de roles
+# ---------------------------------------------------------------------------
+
+
+def _rol_by_nombre(db_session, nombre: str) -> uuid.UUID:
+    """Obtiene el id del rol seeded por el conftest, por su nombre."""
+
+    from sqlmodel import select
+
+    from app.models.rol import Rol
+
+    rol = db_session.exec(select(Rol).where(Rol.nombre == nombre)).first()
+    assert rol is not None, f"rol seeded {nombre!r} no encontrado en BD test"
+    return rol.id
+
+
+class TestAsignarRol:
+    def test_asignar_rol_como_subjefe_devuelve_201(
+        self, client_for_role, voluntario, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        r = c.post(
+            f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)}
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["voluntario_id"] == str(voluntario.id)
+        assert body["rol_id"] == str(rol_id)
+        assert body["rol_nombre"] == "jefe_equipo"
+        assert body["fecha_hasta"] is None
+
+    def test_asignar_rol_sincroniza_con_keycloak(
+        self,
+        client_for_role,
+        make_voluntario,
+        db_session,
+        fake_keycloak_admin,
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        v = make_voluntario(keycloak_id="kc-target-1")
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+
+        r = c.post(f"{BASE}/{v.id}/roles", json={"rol_id": str(rol_id)})
+        assert r.status_code == 201
+        assert ("kc-target-1", "jefe_equipo") in fake_keycloak_admin.roles_asignados
+
+    def test_asignar_rol_sin_keycloak_id_no_llama_a_kc(
+        self,
+        client_for_role,
+        make_voluntario,
+        db_session,
+        fake_keycloak_admin,
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        # Voluntario sin keycloak_id (pre-sync o aún no dado de alta en KC).
+        v = make_voluntario(keycloak_id=None)
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+
+        r = c.post(f"{BASE}/{v.id}/roles", json={"rol_id": str(rol_id)})
+        assert r.status_code == 201
+        assert fake_keycloak_admin.roles_asignados == []
+
+    def test_asignar_rol_como_voluntario_basico_es_403(
+        self, authenticated_client, voluntario, db_session
+    ):
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        r = authenticated_client.post(
+            f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)}
+        )
+        assert r.status_code == 403
+
+    def test_asignar_rol_como_tesorero_es_403(
+        self, client_for_role, voluntario, db_session
+    ):
+        # `tesorero` no tiene voluntarios.editar.
+        c = client_for_role(["tesorero"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        r = c.post(
+            f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)}
+        )
+        assert r.status_code == 403
+
+    def test_asignar_rol_a_voluntario_inexistente_es_404(
+        self, client_for_role, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        r = c.post(
+            f"{BASE}/{uuid.uuid4()}/roles", json={"rol_id": str(rol_id)}
+        )
+        assert r.status_code == 404
+
+    def test_asignar_rol_inexistente_es_404(
+        self, client_for_role, voluntario
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        r = c.post(
+            f"{BASE}/{voluntario.id}/roles",
+            json={"rol_id": str(uuid.uuid4())},
+        )
+        assert r.status_code == 404
+
+    def test_asignar_rol_duplicado_es_409(
+        self, client_for_role, voluntario, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        c.post(f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)})
+        r = c.post(
+            f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)}
+        )
+        assert r.status_code == 409
+
+
+class TestQuitarRol:
+    def test_quitar_rol_como_subjefe_devuelve_200_y_fecha_hasta(
+        self, client_for_role, voluntario, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        c.post(f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)})
+
+        r = c.delete(f"{BASE}/{voluntario.id}/roles/{rol_id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["fecha_hasta"] is not None
+        assert body["rol_nombre"] == "jefe_equipo"
+
+    def test_quitar_rol_sincroniza_con_keycloak(
+        self,
+        client_for_role,
+        make_voluntario,
+        db_session,
+        fake_keycloak_admin,
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        v = make_voluntario(keycloak_id="kc-target-2")
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        c.post(f"{BASE}/{v.id}/roles", json={"rol_id": str(rol_id)})
+
+        r = c.delete(f"{BASE}/{v.id}/roles/{rol_id}")
+        assert r.status_code == 200
+        assert ("kc-target-2", "jefe_equipo") in fake_keycloak_admin.roles_revocados
+
+    def test_quitar_rol_no_asignado_es_404(
+        self, client_for_role, voluntario, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        # Sin asignación previa.
+        r = c.delete(f"{BASE}/{voluntario.id}/roles/{rol_id}")
+        assert r.status_code == 404
+
+    def test_quitar_rol_dos_veces_segunda_es_404(
+        self, client_for_role, voluntario, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        c.post(f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)})
+        c.delete(f"{BASE}/{voluntario.id}/roles/{rol_id}")
+        # Ya cerrada (fecha_hasta poblada) → no hay asignación activa.
+        r = c.delete(f"{BASE}/{voluntario.id}/roles/{rol_id}")
+        assert r.status_code == 404
+
+    def test_quitar_rol_como_voluntario_basico_es_403(
+        self, authenticated_client, voluntario, db_session
+    ):
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        r = authenticated_client.delete(
+            f"{BASE}/{voluntario.id}/roles/{rol_id}"
+        )
+        assert r.status_code == 403
+
+    def test_quitar_rol_a_voluntario_inexistente_es_404(
+        self, client_for_role, db_session
+    ):
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        r = c.delete(f"{BASE}/{uuid.uuid4()}/roles/{rol_id}")
+        assert r.status_code == 404
+
+    def test_reasignar_rol_tras_quitar_funciona(
+        self, client_for_role, voluntario, db_session
+    ):
+        """Quitar y volver a asignar el mismo rol debe ser válido (asignación nueva)."""
+
+        c = client_for_role(["subjefe_agrupacion"])
+        rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+        c.post(f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)})
+        c.delete(f"{BASE}/{voluntario.id}/roles/{rol_id}")
+        r = c.post(
+            f"{BASE}/{voluntario.id}/roles", json={"rol_id": str(rol_id)}
+        )
+        assert r.status_code == 201
+        # La nueva asignación tiene fecha_hasta=None (no es la anterior).
+        assert r.json()["fecha_hasta"] is None
+
+
+class TestSyncKeycloakFallido:
+    def test_si_kc_falla_en_asignacion_no_se_persiste_en_bd(
+        self,
+        client_for_role,
+        make_voluntario,
+        db_session,
+    ):
+        """Patrón EN-02-03: KC antes de BD. Si KC falla, BD no se toca."""
+
+        # Sustituimos el fake por uno que falla.
+        from tests.conftest import FakeKeycloakAdmin
+
+        failing = FakeKeycloakAdmin()
+
+        # Truco: hackeamos directamente el método para que falle.
+        def _fail(*args, **kwargs):
+            from app.services.keycloak_admin import KeycloakAdminError
+
+            raise KeycloakAdminError("test sync failure")
+
+        failing.asignar_rol_realm = _fail
+
+        from app.main import app
+        from app.services.keycloak_admin import get_keycloak_admin
+
+        app.dependency_overrides[get_keycloak_admin] = lambda: failing
+
+        try:
+            c = client_for_role(["subjefe_agrupacion"])
+            v = make_voluntario(keycloak_id="kc-target-3")
+            rol_id = _rol_by_nombre(db_session, "jefe_equipo")
+            r = c.post(
+                f"{BASE}/{v.id}/roles", json={"rol_id": str(rol_id)}
+            )
+            assert r.status_code == 502
+
+            # Comprobar que NO se ha persistido la asignación.
+            from app.repositories import voluntarios as repo
+
+            assert (
+                repo.get_asignacion_activa(
+                    db_session, voluntario_id=v.id, rol_id=rol_id
+                )
+                is None
+            )
+        finally:
+            # El cliente del fixture habrá restablecido los overrides al
+            # finalizar el test, pero por si acaso.
+            pass

@@ -50,6 +50,18 @@ class EmailDuplicado(VoluntarioError):  # noqa: N818 — castellano
     """Ya hay otro voluntario con el mismo email."""
 
 
+class RolNoEncontrado(VoluntarioError):  # noqa: N818 — castellano
+    """No existe un rol con el identificador pedido."""
+
+
+class RolYaAsignado(VoluntarioError):  # noqa: N818 — castellano
+    """El voluntario ya tiene una asignación activa de este rol."""
+
+
+class RolNoAsignado(VoluntarioError):  # noqa: N818 — castellano
+    """El voluntario no tiene una asignación activa de este rol."""
+
+
 # ---------------------------------------------------------------------------
 # Lecturas
 # ---------------------------------------------------------------------------
@@ -208,3 +220,87 @@ def anonimizar(session: Session, voluntario_id: uuid.UUID) -> Voluntario:
     siguiente = repo.count_anonimizados(session) + 1
     placeholder = f"Voluntario anonimizado #{siguiente}"
     return repo.anonimizar(session, v, placeholder_nombre=placeholder)
+
+
+# ---------------------------------------------------------------------------
+# Roles (EN-02-05)
+# ---------------------------------------------------------------------------
+
+
+def asignar_rol(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    rol_id: uuid.UUID,
+    fecha_desde: date | None = None,
+):
+    """Asigna un rol del catálogo al voluntario en BD (sin tocar Keycloak).
+
+    El router orquesta la llamada a Keycloak (vía
+    :class:`KeycloakAdminClient`) ANTES de invocar este service, para
+    que un fallo de KC no deje filas huérfanas en BD — mismo patrón que
+    ``crear_voluntario``. Devuelve también el nombre del rol porque el
+    router necesita ese dato para sincronizar con Keycloak y para la
+    respuesta enriquecida.
+    """
+
+    v = repo.get(session, voluntario_id)
+    if v is None:
+        raise VoluntarioNoEncontrado(str(voluntario_id))
+
+    rol = repo.get_rol(session, rol_id)
+    if rol is None:
+        raise RolNoEncontrado(str(rol_id))
+
+    if repo.get_asignacion_activa(
+        session, voluntario_id=voluntario_id, rol_id=rol_id
+    ) is not None:
+        raise RolYaAsignado(
+            f"voluntario {voluntario_id} ya tiene asignado el rol "
+            f"{rol.nombre} ({rol_id})"
+        )
+
+    asignacion = repo.crear_asignacion_rol(
+        session,
+        voluntario_id=voluntario_id,
+        rol_id=rol_id,
+        fecha_desde=fecha_desde or date.today(),
+    )
+    return asignacion, rol
+
+
+def quitar_rol(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    rol_id: uuid.UUID,
+    fecha_hasta: date | None = None,
+):
+    """Cierra la asignación activa del par (voluntario, rol) en BD.
+
+    Es soft delete: la fila persiste con ``fecha_hasta`` poblada para
+    mantener el histórico de asignaciones. Devuelve también el nombre
+    del rol para que el router pueda sincronizar con Keycloak.
+    """
+
+    v = repo.get(session, voluntario_id)
+    if v is None:
+        raise VoluntarioNoEncontrado(str(voluntario_id))
+
+    rol = repo.get_rol(session, rol_id)
+    if rol is None:
+        raise RolNoEncontrado(str(rol_id))
+
+    asignacion = repo.get_asignacion_activa(
+        session, voluntario_id=voluntario_id, rol_id=rol_id
+    )
+    if asignacion is None:
+        raise RolNoAsignado(
+            f"voluntario {voluntario_id} no tiene asignado el rol "
+            f"{rol.nombre} ({rol_id})"
+        )
+
+    cerrada = repo.cerrar_asignacion_rol(
+        session, asignacion, fecha_hasta=fecha_hasta or date.today()
+    )
+    return cerrada, rol

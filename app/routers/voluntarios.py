@@ -24,8 +24,10 @@ from app.core.security import get_current_user, require_permission
 from app.models.voluntario import EstadoVoluntario
 from app.schemas.auth import CurrentUser
 from app.schemas.voluntario import (
+    AsignarRolRequest,
     VoluntarioCreate,
     VoluntarioResponse,
+    VoluntarioRolResponse,
     VoluntarioSummary,
     VoluntarioUpdateAdmin,
     VoluntarioUpdateSelf,
@@ -407,6 +409,183 @@ def anonimizar_voluntario(
             ) from e
 
     return service.obtener(session, voluntario_id)
+
+
+# ---------------------------------------------------------------------------
+# Asignación de roles (EN-02-05)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{voluntario_id}/roles",
+    response_model=VoluntarioRolResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Asignar un rol a un voluntario (EN-02-05)",
+)
+def asignar_rol_a_voluntario(
+    voluntario_id: uuid.UUID,
+    data: AsignarRolRequest,
+    session: SessionDep,
+    kc_admin: KeycloakAdminDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_EDITAR))
+    ],
+):
+    """Asigna un rol al voluntario.
+
+    Orden de operaciones (mismo patrón que ``crear_voluntario`` de
+    EN-02-03):
+
+    1. Validar voluntario y rol en BD; rechazar si ya hay una
+       asignación activa (idempotencia explícita: 409 en lugar de un
+       no-op silencioso).
+    2. Sincronizar con Keycloak. Si la Admin API está deshabilitada
+       (modo dev / tests), se omite sin error. Si la llamada falla,
+       devolvemos 502 sin tocar BD para evitar asignaciones huérfanas.
+    3. Persistir la fila en ``voluntario_roles``.
+
+    Si el voluntario no tiene ``keycloak_id`` set en BD, se asigna solo
+    en BD: no hay nada que sincronizar.
+    """
+
+    # 1. Validar antes de tocar nada (incluye el chequeo de duplicado).
+    try:
+        # `asignar_rol` valida pero también crea — para mantener el
+        # patrón "KC antes de BD" lo dividimos: aquí solo validamos.
+        # Reutilizamos el repo directo para no duplicar lógica.
+        from app.repositories import voluntarios as repo
+
+        voluntario = repo.get(session, voluntario_id)
+        if voluntario is None:
+            raise service.VoluntarioNoEncontrado(str(voluntario_id))
+        rol = repo.get_rol(session, data.rol_id)
+        if rol is None:
+            raise service.RolNoEncontrado(str(data.rol_id))
+        if repo.get_asignacion_activa(
+            session, voluntario_id=voluntario_id, rol_id=data.rol_id
+        ) is not None:
+            raise service.RolYaAsignado(rol.nombre)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {e}",
+        ) from e
+    except service.RolNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Rol no encontrado: {e}",
+        ) from e
+    except service.RolYaAsignado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"El voluntario ya tiene asignado el rol {e}; "
+                "para reasignar, quítalo primero."
+            ),
+        ) from e
+
+    # 2. Sincronización con Keycloak (si está habilitada y el voluntario
+    #    está en KC).
+    if voluntario.keycloak_id:
+        try:
+            kc_admin.asignar_rol_realm(voluntario.keycloak_id, rol.nombre)
+        except KeycloakAdminError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Sincronización con Keycloak fallida: {e}",
+            ) from e
+
+    # 3. Persistencia en BD.
+    asignacion, _rol = service.asignar_rol(
+        session, voluntario_id=voluntario_id, rol_id=data.rol_id
+    )
+
+    return VoluntarioRolResponse(
+        id=asignacion.id,
+        voluntario_id=asignacion.voluntario_id,
+        rol_id=asignacion.rol_id,
+        rol_nombre=rol.nombre,
+        fecha_desde=asignacion.fecha_desde,
+        fecha_hasta=asignacion.fecha_hasta,
+    )
+
+
+@router.delete(
+    "/{voluntario_id}/roles/{rol_id}",
+    response_model=VoluntarioRolResponse,
+    summary="Quitar un rol a un voluntario (EN-02-05)",
+)
+def quitar_rol_a_voluntario(
+    voluntario_id: uuid.UUID,
+    rol_id: uuid.UUID,
+    session: SessionDep,
+    kc_admin: KeycloakAdminDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_EDITAR))
+    ],
+):
+    """Quita un rol al voluntario (soft delete con histórico).
+
+    Mismo orden que la asignación:
+
+    1. Validar voluntario, rol y asignación activa.
+    2. Sincronizar con Keycloak (si aplica).
+    3. Marcar ``fecha_hasta=today`` en ``voluntario_roles``.
+    """
+
+    try:
+        from app.repositories import voluntarios as repo
+
+        voluntario = repo.get(session, voluntario_id)
+        if voluntario is None:
+            raise service.VoluntarioNoEncontrado(str(voluntario_id))
+        rol = repo.get_rol(session, rol_id)
+        if rol is None:
+            raise service.RolNoEncontrado(str(rol_id))
+        if (
+            repo.get_asignacion_activa(
+                session, voluntario_id=voluntario_id, rol_id=rol_id
+            )
+            is None
+        ):
+            raise service.RolNoAsignado(rol.nombre)
+    except service.VoluntarioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {e}",
+        ) from e
+    except service.RolNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Rol no encontrado: {e}",
+        ) from e
+    except service.RolNoAsignado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"El voluntario no tiene asignado el rol {e}",
+        ) from e
+
+    if voluntario.keycloak_id:
+        try:
+            kc_admin.quitar_rol_realm(voluntario.keycloak_id, rol.nombre)
+        except KeycloakAdminError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Sincronización con Keycloak fallida: {e}",
+            ) from e
+
+    asignacion, _rol = service.quitar_rol(
+        session, voluntario_id=voluntario_id, rol_id=rol_id
+    )
+
+    return VoluntarioRolResponse(
+        id=asignacion.id,
+        voluntario_id=asignacion.voluntario_id,
+        rol_id=asignacion.rol_id,
+        rol_nombre=rol.nombre,
+        fecha_desde=asignacion.fecha_desde,
+        fecha_hasta=asignacion.fecha_hasta,
+    )
 
 
 # Re-export para que main.py lo importe directamente.
