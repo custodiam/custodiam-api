@@ -297,6 +297,7 @@ def asignar_material_a_voluntario(
             voluntario_id=body.voluntario_id,
             tipo=body.tipo,
             cantidad=body.cantidad,
+            actor_keycloak_id=user.sub,
         )
     except service.MaterialNoEncontrado as e:
         raise HTTPException(
@@ -336,7 +337,7 @@ def devolver_material(
     material_id: uuid.UUID,
     body: DevolverMaterialRequest,
     session: SessionDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser,
         Depends(require_permission(Permission.INVENTARIO_REGISTRAR_DEVOLUCION)),
     ],
@@ -347,6 +348,7 @@ def devolver_material(
             material_id=material_id,
             voluntario_id=body.voluntario_id,
             observaciones=body.observaciones,
+            actor_keycloak_id=user.sub,
         )
     except service.MaterialNoEncontrado as e:
         raise HTTPException(

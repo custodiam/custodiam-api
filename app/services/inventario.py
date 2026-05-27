@@ -351,6 +351,7 @@ def asignar_material_a_voluntario(
     tipo: TipoAsignacion,
     cantidad: int = 1,
     cuando: datetime | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> AsignacionMaterial:
     """CU-21 / US-05-03 (PERSONAL) y US-05-04 (PRESTAMO)."""
 
@@ -402,6 +403,19 @@ def asignar_material_a_voluntario(
         repo.set_estado_material(
             session, material, nuevo_estado=EstadoInventario.EN_USO
         )
+    _registrar_evento_voluntario(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="asignacion_material",
+        payload={
+            "material_id": str(material_id),
+            "material_nombre": material.nombre,
+            "tipo_asignacion": tipo.value,
+            "cantidad": cantidad,
+            "asignacion_id": str(asignacion.id),
+        },
+        actor_keycloak_id=actor_keycloak_id,
+    )
     return asignacion
 
 
@@ -453,6 +467,7 @@ def devolver_material(
     voluntario_id: uuid.UUID,
     observaciones: str | None = None,
     cuando: datetime | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> AsignacionMaterial:
     """CU-23 / US-05-05. Devuelve la asignación activa al voluntario."""
 
@@ -484,7 +499,46 @@ def devolver_material(
                 session, material, nuevo_estado=EstadoInventario.OPERATIVO
             )
 
+    _registrar_evento_voluntario(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="devolucion_material",
+        payload={
+            "material_id": str(material_id),
+            "material_nombre": material.nombre,
+            "asignacion_id": str(cerrada.id),
+            "observaciones": observaciones,
+        },
+        actor_keycloak_id=actor_keycloak_id,
+    )
     return cerrada
+
+
+# ---------------------------------------------------------------------------
+# Helper de audit log (EN-02-04 / US-02-06)
+# ---------------------------------------------------------------------------
+
+
+def _registrar_evento_voluntario(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    tipo_str: str,
+    payload: dict | None = None,
+    actor_keycloak_id: str | None = None,
+) -> None:
+    """Audit log con import diferido (mismo patrón en los demás services)."""
+
+    from app.models.voluntario_evento import TipoEventoVoluntario
+    from app.repositories import voluntario_evento as eventos_repo
+
+    eventos_repo.registrar(
+        session,
+        voluntario_id=voluntario_id,
+        tipo=TipoEventoVoluntario(tipo_str),
+        payload=payload,
+        actor_keycloak_id=actor_keycloak_id,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from app.models.tipo_acreditacion import (
 from app.models.tipo_equipamiento import TipoEquipamiento
 from app.models.vehiculo import TipoVehiculo, Vehiculo
 from app.models.voluntario import EstadoVoluntario, Voluntario
+from app.models.voluntario_evento import TipoEventoVoluntario, VoluntarioEvento
 from app.models.voluntario_rol import VoluntarioRol
 
 __all__ = [
@@ -54,6 +55,7 @@ __all__ = [
     "TipoAcreditacion",
     "TipoAsignacion",
     "TipoEquipamiento",
+    "TipoEventoVoluntario",
     "TipoInscripcion",
     "TipoMaterial",
     "TipoNotificacion",
@@ -61,5 +63,6 @@ __all__ = [
     "TipoVehiculo",
     "Vehiculo",
     "Voluntario",
+    "VoluntarioEvento",
     "VoluntarioRol",
 ]
