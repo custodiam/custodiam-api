@@ -437,3 +437,90 @@ def servicio_activo(make_servicio):
     from app.models.servicio import EstadoServicio
 
     return make_servicio(estado=EstadoServicio.ACTIVO)
+
+
+# ---------------------------------------------------------------------------
+# Factories de inventario (E05)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_material(db_session):
+    """Crea un Material con valores por defecto sensatos."""
+
+    from app.models.material import EstadoInventario, Material, TipoMaterial
+
+    counter = {"n": 0}
+
+    def _factory(
+        *,
+        nombre: str = "Casco operativo",
+        tipo: TipoMaterial = TipoMaterial.PERSONAL,
+        estado: EstadoInventario = EstadoInventario.OPERATIVO,
+        cantidad: int = 1,
+        ubicacion_base: str = "Base PC Bajo Gállego",
+        codigo: str | None = None,
+        **extra,
+    ):
+        counter["n"] += 1
+        if codigo is None:
+            codigo = f"MAT-TEST-{counter['n']:04d}"
+        material = Material(
+            nombre=nombre,
+            tipo=tipo,
+            estado=estado,
+            cantidad=cantidad,
+            ubicacion_base=ubicacion_base,
+            codigo=codigo,
+            **extra,
+        )
+        db_session.add(material)
+        db_session.commit()
+        db_session.refresh(material)
+        return material
+
+    return _factory
+
+
+@pytest.fixture
+def material(make_material):
+    return make_material()
+
+
+@pytest.fixture
+def make_vehiculo(db_session):
+    """Crea un Vehiculo con valores por defecto sensatos."""
+
+    from app.models.vehiculo import TipoVehiculo, Vehiculo
+
+    counter = {"n": 0}
+
+    def _factory(
+        *,
+        codigo_interno: str | None = None,
+        matricula: str = "1234-ABC",
+        tipo: TipoVehiculo = TipoVehiculo.FURGONETA,
+        ubicacion_base: str = "Base PC Bajo Gállego",
+        **extra,
+    ):
+        counter["n"] += 1
+        if codigo_interno is None:
+            codigo_interno = f"VH-TEST-{counter['n']:04d}"
+        vehiculo = Vehiculo(
+            codigo_interno=codigo_interno,
+            matricula=matricula,
+            tipo=tipo,
+            ubicacion_base=ubicacion_base,
+            **extra,
+        )
+        db_session.add(vehiculo)
+        db_session.commit()
+        db_session.refresh(vehiculo)
+        return vehiculo
+
+    return _factory
+
+
+@pytest.fixture
+def vehiculo(make_vehiculo):
+    return make_vehiculo()

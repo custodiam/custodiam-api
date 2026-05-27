@@ -297,6 +297,15 @@ def cerrar(
         session, servicio_id=servicio.id, cuando=cuando_cierre
     )
 
+    # US-05-06 / US-05-07: liberación automática de material y vehículos
+    # asignados al servicio. Mismo patrón cross-feature que el fichaje
+    # (import dentro de la función para evitar circular).
+    from app.services import inventario as inventario_service
+
+    inventario_service.liberar_asignaciones_de_servicio(
+        session, servicio_id=servicio.id, cuando=cuando_cierre
+    )
+
     return repo.set_estado(
         session,
         servicio,
