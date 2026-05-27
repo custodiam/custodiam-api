@@ -51,6 +51,8 @@ TEST_DATABASE_URL = os.getenv(
 # (que también es catálogo, no estado operativo). Mantenerlas seeded
 # evita reseeding caro en cada test.
 _OPERATIONAL_TABLES = (
+    "inscripciones_servicio",
+    "servicios",
     "disponibilidades",
     "acreditaciones",
     "tallas_voluntario",
@@ -364,3 +366,69 @@ def voluntario(make_voluntario):
     """Voluntario por defecto, listo para usar en tests simples."""
 
     return make_voluntario()
+
+
+@pytest.fixture
+def make_servicio(db_session):
+    """Crea un servicio en BD con valores por defecto sensatos."""
+
+    from datetime import datetime as _dt
+
+    from app.models.servicio import EstadoServicio, Servicio, TipoServicio
+
+    def _factory(
+        *,
+        titulo: str = "Servicio de prueba",
+        descripcion: str | None = None,
+        tipo: TipoServicio = TipoServicio.PREVENTIVO,
+        estado: EstadoServicio = EstadoServicio.BORRADOR,
+        fecha_inicio: _dt = _dt(2026, 6, 1, 9, 0),
+        fecha_fin: _dt | None = _dt(2026, 6, 1, 14, 0),
+        ubicacion: str = "Zaragoza, Casco Histórico",
+        numero_voluntarios: int | None = None,
+        creado_por_keycloak_id: str | None = None,
+        **extra,
+    ):
+        servicio = Servicio(
+            titulo=titulo,
+            descripcion=descripcion,
+            tipo=tipo,
+            estado=estado,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            ubicacion=ubicacion,
+            numero_voluntarios=numero_voluntarios,
+            creado_por_keycloak_id=creado_por_keycloak_id,
+            **extra,
+        )
+        db_session.add(servicio)
+        db_session.commit()
+        db_session.refresh(servicio)
+        return servicio
+
+    return _factory
+
+
+@pytest.fixture
+def servicio_borrador(make_servicio):
+    """Servicio en estado BORRADOR, listo para publicar / convocar."""
+
+    return make_servicio()
+
+
+@pytest.fixture
+def servicio_publicado(make_servicio):
+    """Servicio en estado PUBLICADO, listo para apuntarse o convocar."""
+
+    from app.models.servicio import EstadoServicio
+
+    return make_servicio(estado=EstadoServicio.PUBLICADO)
+
+
+@pytest.fixture
+def servicio_activo(make_servicio):
+    """Servicio en estado ACTIVO, listo para fichar o cerrar."""
+
+    from app.models.servicio import EstadoServicio
+
+    return make_servicio(estado=EstadoServicio.ACTIVO)
