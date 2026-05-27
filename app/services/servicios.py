@@ -274,17 +274,34 @@ def cerrar(
     observaciones: str | None = None,
     fecha_cierre: datetime | None = None,
 ) -> Servicio:
-    """CU-07. Pone el servicio en CERRADO."""
+    """CU-07. Pone el servicio en CERRADO.
+
+    Antes de marcar el cierre se cierran automáticamente los fichajes
+    abiertos de los voluntarios que no han fichado salida (US-04-05).
+    La importación de ``app.services.fichajes`` se hace dentro de la
+    función para evitar dependencia circular entre módulos service.
+    """
 
     servicio = repo.get(session, servicio_id)
     if servicio is None:
         raise ServicioNoEncontrado(str(servicio_id))
     _validar_transicion(servicio.estado, EstadoServicio.CERRADO, servicio.tipo)
+
+    cuando_cierre = fecha_cierre or datetime.now()
+
+    # US-04-05: fichaje automático antes de cambiar el estado para que el
+    # voluntario sepa que su salida quedó sellada con la hora del cierre.
+    from app.services import fichajes as fichajes_service
+
+    fichajes_service.cerrar_fichajes_abiertos(
+        session, servicio_id=servicio.id, cuando=cuando_cierre
+    )
+
     return repo.set_estado(
         session,
         servicio,
         nuevo_estado=EstadoServicio.CERRADO,
-        fecha_cierre=fecha_cierre or datetime.now(),
+        fecha_cierre=cuando_cierre,
         observaciones_cierre=observaciones,
     )
 

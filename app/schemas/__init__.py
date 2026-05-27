@@ -29,6 +29,11 @@ from app.schemas.equipamiento import (
     TallaVoluntarioUpdate,
     TipoEquipamientoResponse,
 )
+from app.schemas.fichaje import (
+    FichajeEnServicioResponse,
+    FichajeResponse,
+    HorasAcumuladasResponse,
+)
 from app.schemas.servicio import (
     InscripcionServicioResponse,
     ServicioBase,
@@ -59,6 +64,9 @@ __all__ = [
     "ContactoEmergenciaResponse",
     "ContactoEmergenciaUpdate",
     "CurrentUser",
+    "FichajeEnServicioResponse",
+    "FichajeResponse",
+    "HorasAcumuladasResponse",
     "InscripcionServicioResponse",
     "ServicioBase",
     "ServicioCerrar",
