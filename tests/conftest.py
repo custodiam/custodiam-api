@@ -51,6 +51,9 @@ TEST_DATABASE_URL = os.getenv(
 # (que también es catálogo, no estado operativo). Mantenerlas seeded
 # evita reseeding caro en cada test.
 _OPERATIONAL_TABLES = (
+    "voluntario_eventos",
+    "notificaciones",
+    "dispositivos",
     "asignaciones_vehiculo",
     "asignaciones_material",
     "vehiculos",
@@ -167,6 +170,80 @@ def db_session(test_engine) -> Generator[Session, None, None]:
             )
         )
         conn.commit()
+
+
+class FakeFcmAdmin:
+    """Sustituto sin red para `FcmAdminClient` en tests.
+
+    No hereda de :class:`FcmAdminClient` para no arrastrar el ciclo de
+    carga del service account; expone la misma interfaz pública
+    (``enabled`` y ``enviar``) que el código de producción consume. Las
+    llamadas se registran en ``envios`` para que los tests puedan
+    asertar el fan-out.
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        tokens_invalidos: set[str] | None = None,
+        tokens_5xx: set[str] | None = None,
+    ) -> None:
+        self._enabled = enabled
+        self.tokens_invalidos = tokens_invalidos or set()
+        self.tokens_5xx = tokens_5xx or set()
+        self.envios: list[dict] = []
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def enviar(self, *, token, titulo, cuerpo, prioridad, data=None):
+        if token in self.tokens_5xx:
+            from app.services.fcm_admin import FcmAdminError
+
+            raise FcmAdminError(f"fake 5xx para token={token}")
+        self.envios.append(
+            {
+                "token": token,
+                "titulo": titulo,
+                "cuerpo": cuerpo,
+                "prioridad": prioridad,
+                "data": data,
+            }
+        )
+        if token in self.tokens_invalidos:
+            return False
+        return True
+
+
+class FakeNtfyClient:
+    """Sustituto sin red para `NtfyClient` en tests."""
+
+    def __init__(self, *, enabled: bool = True, fail: bool = False) -> None:
+        self._enabled = enabled
+        self._fail = fail
+        self.publicaciones: list[dict] = []
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def enviar(self, *, titulo, cuerpo, prioridad, topic=None, tags=None):
+        if self._fail:
+            from app.services.ntfy_client import NtfyError
+
+            raise NtfyError("fake ntfy 5xx")
+        self.publicaciones.append(
+            {
+                "titulo": titulo,
+                "cuerpo": cuerpo,
+                "prioridad": prioridad,
+                "topic": topic,
+                "tags": list(tags) if tags else None,
+            }
+        )
+        return True
 
 
 class FakeKeycloakAdmin(KeycloakAdminClient):

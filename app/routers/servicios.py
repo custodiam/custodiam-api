@@ -35,11 +35,15 @@ from app.schemas.servicio import (
     VoluntarioInscritoResponse,
 )
 from app.services import servicios as service
+from app.services.fcm_admin import FcmAdminClient, get_fcm_admin
+from app.services.ntfy_client import NtfyClient, get_ntfy_client
 
 router = APIRouter(prefix="/servicios", tags=["servicios"])
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+FcmAdminDep = Annotated[FcmAdminClient, Depends(get_fcm_admin)]
+NtfyDep = Annotated[NtfyClient, Depends(get_ntfy_client)]
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +245,9 @@ def publicar_servicio(
 def convocar_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
-    _: Annotated[
+    fcm_client: FcmAdminDep,
+    ntfy_client: NtfyDep,
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.SERVICIOS_CONVOCAR))
     ],
     body: ServicioConvocar = ServicioConvocar(),
@@ -252,11 +258,22 @@ def convocar_servicio(
     (US-03-04). Si trae ids, solo esos (US-03-05). Si el servicio no
     está aún en ACTIVO, intenta la transición a ACTIVO; si la transición
     no es válida (p. ej. un preventivo en borrador), devuelve 409.
+
+    El fan-out a Firebase Cloud Messaging y a ntfy (Epic E06) se dispara
+    automáticamente tras crear las inscripciones; ambos clientes están
+    inyectados aquí y delegan en :mod:`app.services.notificaciones`. Si
+    los clientes están deshabilitados en config, el envío es no-op y la
+    convocatoria se materializa igual en BD.
     """
 
     try:
         servicio, _inscripciones = service.convocar(
-            session, servicio_id, voluntario_ids=body.voluntario_ids or None
+            session,
+            servicio_id,
+            voluntario_ids=body.voluntario_ids or None,
+            fcm_client=fcm_client,
+            ntfy_client=ntfy_client,
+            actor_keycloak_id=user.sub,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
@@ -276,14 +293,17 @@ def convocar_servicio(
 def cerrar_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.SERVICIOS_CERRAR))
     ],
     body: ServicioCerrar = ServicioCerrar(),
 ):
     try:
         return service.cerrar(
-            session, servicio_id, observaciones=body.observaciones_cierre
+            session,
+            servicio_id,
+            observaciones=body.observaciones_cierre,
+            actor_keycloak_id=user.sub,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
@@ -316,7 +336,10 @@ def inscribirse_en_servicio(
     voluntario_id = _voluntario_id_de_user(session, user)
     try:
         service.apuntarse_propio(
-            session, servicio_id=servicio_id, voluntario_id=voluntario_id
+            session,
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            actor_keycloak_id=user.sub,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
@@ -355,7 +378,10 @@ def desapuntarse_de_servicio(
     voluntario_id = _voluntario_id_de_user(session, user)
     try:
         service.desapuntarse_propio(
-            session, servicio_id=servicio_id, voluntario_id=voluntario_id
+            session,
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            actor_keycloak_id=user.sub,
         )
     except service.NoInscrito as e:
         raise HTTPException(
