@@ -8,7 +8,10 @@ Importar aquí todos los modelos para que:
 from app.models.acreditacion import Acreditacion
 from app.models.contacto_emergencia import ContactoEmergencia
 from app.models.disponibilidad import Disponibilidad
+from app.models.fichaje import Fichaje
+from app.models.inscripcion_servicio import InscripcionServicio, TipoInscripcion
 from app.models.rol import Rol
+from app.models.servicio import EstadoServicio, Servicio, TipoServicio
 from app.models.talla_voluntario import TallaVoluntario
 from app.models.tipo_acreditacion import (
     CategoriaAcreditacion,
@@ -23,11 +26,17 @@ __all__ = [
     "CategoriaAcreditacion",
     "ContactoEmergencia",
     "Disponibilidad",
+    "EstadoServicio",
     "EstadoVoluntario",
+    "Fichaje",
+    "InscripcionServicio",
     "Rol",
+    "Servicio",
     "TallaVoluntario",
     "TipoAcreditacion",
     "TipoEquipamiento",
+    "TipoInscripcion",
+    "TipoServicio",
     "Voluntario",
     "VoluntarioRol",
 ]

@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.routers import auth, voluntarios
+from app.routers import auth, fichajes, servicios, voluntarios
 
 app = FastAPI(
     title="Custodiam API",
@@ -46,8 +46,10 @@ def health():
 
 app.include_router(auth.router, prefix=f"/api/{settings.api_version}")
 app.include_router(voluntarios.router, prefix=f"/api/{settings.api_version}")
+app.include_router(servicios.router, prefix=f"/api/{settings.api_version}")
+app.include_router(fichajes.router, prefix=f"/api/{settings.api_version}")
+app.include_router(fichajes.self_router, prefix=f"/api/{settings.api_version}")
 
 # Routers se incluirán según se desarrollen:
-# from app.routers import servicios, inventario
-# app.include_router(servicios.router, prefix=f"/api/{settings.api_version}")
+# from app.routers import inventario
 # app.include_router(inventario.router, prefix=f"/api/{settings.api_version}")

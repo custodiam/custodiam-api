@@ -115,3 +115,32 @@ class VoluntarioResponse(VoluntarioBase):
     acreditaciones: list[AcreditacionResponse] = Field(default_factory=list)
     tallas: list[TallaVoluntarioResponse] = Field(default_factory=list)
     contactos_emergencia: list[ContactoEmergenciaResponse] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Asignación de roles (EN-02-05)
+# ---------------------------------------------------------------------------
+
+
+class AsignarRolRequest(BaseModel):
+    """Body de ``POST /voluntarios/{id}/roles``."""
+
+    rol_id: UUID
+
+
+class VoluntarioRolResponse(BaseModel):
+    """Respuesta de los endpoints de asignación/baja de rol.
+
+    Expone tanto el ``rol_id`` (interno) como el ``rol_nombre`` (que es
+    el que se sincroniza con Keycloak) para que el cliente no necesite
+    un segundo round-trip al catálogo de roles tras la mutación.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    voluntario_id: UUID
+    rol_id: UUID
+    rol_nombre: str
+    fecha_desde: date
+    fecha_hasta: date | None = None
