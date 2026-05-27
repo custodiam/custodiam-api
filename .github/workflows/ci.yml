@@ -46,7 +46,12 @@ jobs:
 
       - name: Test with pytest
         env:
+          # `DATABASE_URL` lo lee `app.core.config.settings` cuando la
+          # app arranca; `TEST_DATABASE_URL` lo lee el conftest. Ambas
+          # apuntan al mismo service container del workflow porque en
+          # CI no hay BD de producción separada.
           DATABASE_URL: postgresql+psycopg://custodiam:test@localhost:5432/custodiam_test
+          TEST_DATABASE_URL: postgresql+psycopg://custodiam:test@localhost:5432/custodiam_test
         run: uv run pytest tests/ -v --cov=app
 
   build-docker:
