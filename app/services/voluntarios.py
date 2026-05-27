@@ -119,6 +119,7 @@ def crear(
     *,
     fecha_alta: date | None = None,
     keycloak_id: str | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> Voluntario:
     """Crea un voluntario nuevo (CU-10).
 
@@ -126,6 +127,10 @@ def crear(
     Router pueda elegir si los recibe del body, los autocompleta a
     `date.today()` o los pide al servicio de sincronización con Keycloak
     (EN-02-03).
+
+    Si se proporciona ``actor_keycloak_id``, se registra un evento ALTA
+    en el audit log (EN-02-04). El registro se hace después del INSERT
+    para que el evento referencie un voluntario ya persistido.
     """
 
     if data.dni and repo.exists_with_dni(session, data.dni):
@@ -138,7 +143,19 @@ def crear(
     payload["keycloak_id"] = keycloak_id
     payload["estado"] = EstadoVoluntario.ACTIVO
 
-    return repo.create(session, payload)
+    voluntario = repo.create(session, payload)
+    _registrar_evento(
+        session,
+        voluntario_id=voluntario.id,
+        tipo_str="alta",
+        payload={
+            "nombre": voluntario.nombre,
+            "keycloak_id": keycloak_id,
+            "fecha_alta": voluntario.fecha_alta.isoformat(),
+        },
+        actor_keycloak_id=actor_keycloak_id,
+    )
+    return voluntario
 
 
 def actualizar_admin(
@@ -195,16 +212,32 @@ def dar_baja(
     voluntario_id: uuid.UUID,
     *,
     fecha_baja: date | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> Voluntario:
     """Soft delete operativo. Conserva el histórico y permite revertir."""
 
     v = repo.get(session, voluntario_id)
     if v is None:
         raise VoluntarioNoEncontrado(str(voluntario_id))
-    return repo.soft_delete(session, v, fecha_baja=fecha_baja or date.today())
+    resultado = repo.soft_delete(
+        session, v, fecha_baja=fecha_baja or date.today()
+    )
+    _registrar_evento(
+        session,
+        voluntario_id=resultado.id,
+        tipo_str="baja",
+        payload={"fecha_baja": resultado.fecha_baja.isoformat()},
+        actor_keycloak_id=actor_keycloak_id,
+    )
+    return resultado
 
 
-def anonimizar(session: Session, voluntario_id: uuid.UUID) -> Voluntario:
+def anonimizar(
+    session: Session,
+    voluntario_id: uuid.UUID,
+    *,
+    actor_keycloak_id: str | None = None,
+) -> Voluntario:
     """Anonimización Art. 17 RGPD. Irreversible.
 
     Construye un placeholder único basado en el contador actual de
@@ -219,7 +252,17 @@ def anonimizar(session: Session, voluntario_id: uuid.UUID) -> Voluntario:
 
     siguiente = repo.count_anonimizados(session) + 1
     placeholder = f"Voluntario anonimizado #{siguiente}"
-    return repo.anonimizar(session, v, placeholder_nombre=placeholder)
+    resultado = repo.anonimizar(session, v, placeholder_nombre=placeholder)
+    # El evento se registra con el voluntario_id (preservado tras la
+    # anonimización). El payload NO incluye PII: solo el placeholder.
+    _registrar_evento(
+        session,
+        voluntario_id=resultado.id,
+        tipo_str="anonimizacion",
+        payload={"placeholder": placeholder},
+        actor_keycloak_id=actor_keycloak_id,
+    )
+    return resultado
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +276,7 @@ def asignar_rol(
     voluntario_id: uuid.UUID,
     rol_id: uuid.UUID,
     fecha_desde: date | None = None,
+    actor_keycloak_id: str | None = None,
 ):
     """Asigna un rol del catálogo al voluntario en BD (sin tocar Keycloak).
 
@@ -266,6 +310,13 @@ def asignar_rol(
         rol_id=rol_id,
         fecha_desde=fecha_desde or date.today(),
     )
+    _registrar_evento(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="cambio_rol_asignado",
+        payload={"rol_id": str(rol_id), "rol_nombre": rol.nombre},
+        actor_keycloak_id=actor_keycloak_id,
+    )
     return asignacion, rol
 
 
@@ -275,6 +326,7 @@ def quitar_rol(
     voluntario_id: uuid.UUID,
     rol_id: uuid.UUID,
     fecha_hasta: date | None = None,
+    actor_keycloak_id: str | None = None,
 ):
     """Cierra la asignación activa del par (voluntario, rol) en BD.
 
@@ -303,4 +355,49 @@ def quitar_rol(
     cerrada = repo.cerrar_asignacion_rol(
         session, asignacion, fecha_hasta=fecha_hasta or date.today()
     )
+    _registrar_evento(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="cambio_rol_revocado",
+        payload={"rol_id": str(rol_id), "rol_nombre": rol.nombre},
+        actor_keycloak_id=actor_keycloak_id,
+    )
     return cerrada, rol
+
+
+# ---------------------------------------------------------------------------
+# Helper de audit log (EN-02-04 / US-02-06)
+# ---------------------------------------------------------------------------
+
+
+def _registrar_evento(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    tipo_str: str,
+    payload: dict | None = None,
+    actor_keycloak_id: str | None = None,
+) -> None:
+    """Registra un evento en el audit log con import diferido.
+
+    El import al pie de la función evita el ciclo
+    ``services/voluntarios → repositories/voluntario_evento →
+    models/voluntario_evento → models/voluntario → services/voluntarios``
+    que aparecería si la importación se hiciera al top-level. Es el
+    mismo patrón que ``servicios.cerrar`` usa para invocar fichajes e
+    inventario.
+
+    La función nunca propaga errores del audit log para que un fallo en
+    el registro no rompa el flujo operativo del voluntario.
+    """
+
+    from app.models.voluntario_evento import TipoEventoVoluntario
+    from app.repositories import voluntario_evento as eventos_repo
+
+    eventos_repo.registrar(
+        session,
+        voluntario_id=voluntario_id,
+        tipo=TipoEventoVoluntario(tipo_str),
+        payload=payload,
+        actor_keycloak_id=actor_keycloak_id,
+    )

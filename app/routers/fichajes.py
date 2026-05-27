@@ -81,6 +81,7 @@ def fichar_entrada(
             session,
             servicio_id=servicio_id,
             voluntario_id=voluntario_id,
+            actor_keycloak_id=user.sub,
         )
     except ServicioNoEncontrado as e:
         raise HTTPException(
@@ -132,6 +133,7 @@ def fichar_salida(
             session,
             servicio_id=servicio_id,
             voluntario_id=voluntario_id,
+            actor_keycloak_id=user.sub,
         )
     except service.SinFichajeAbierto as e:
         raise HTTPException(

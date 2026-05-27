@@ -236,6 +236,7 @@ def convocar(
     fecha: datetime | None = None,
     fcm_client: FcmAdminClient | None = None,
     ntfy_client: NtfyClient | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> tuple[Servicio, list[InscripcionServicio]]:
     """CU-03. Convoca voluntarios y pasa el servicio a ACTIVO.
 
@@ -268,16 +269,30 @@ def convocar(
         ids = repo.list_ids_voluntarios_activos(session)
 
     cuando = fecha or datetime.now()
-    inscripciones = [
-        repo.upsert_inscripcion(
+    inscripciones = []
+    for vol_id in ids:
+        inscripcion = repo.upsert_inscripcion(
             session,
             servicio_id=servicio.id,
             voluntario_id=vol_id,
             tipo=TipoInscripcion.CONVOCADO,
             fecha=cuando,
         )
-        for vol_id in ids
-    ]
+        inscripciones.append(inscripcion)
+        # Cada convocado genera un evento INSCRIPCION_SERVICIO con el
+        # actor (mando) que lanzó la convocatoria.
+        _registrar_evento_voluntario(
+            session,
+            voluntario_id=vol_id,
+            tipo_str="inscripcion_servicio",
+            payload={
+                "servicio_id": str(servicio.id),
+                "servicio_titulo": servicio.titulo,
+                "tipo_servicio": servicio.tipo.value,
+                "via": "convocatoria",
+            },
+            actor_keycloak_id=actor_keycloak_id,
+        )
 
     if fcm_client is not None or ntfy_client is not None:
         from app.services import notificaciones as notificaciones_service
@@ -310,6 +325,7 @@ def cerrar(
     *,
     observaciones: str | None = None,
     fecha_cierre: datetime | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> Servicio:
     """CU-07. Pone el servicio en CERRADO.
 
@@ -317,6 +333,10 @@ def cerrar(
     abiertos de los voluntarios que no han fichado salida (US-04-05).
     La importación de ``app.services.fichajes`` se hace dentro de la
     función para evitar dependencia circular entre módulos service.
+
+    El ``actor_keycloak_id`` se propaga al cierre automático de fichajes
+    (para que el evento ``FICHAJE_SALIDA`` registre quién provocó la
+    cascada) y a la liberación de asignaciones de inventario.
     """
 
     servicio = repo.get(session, servicio_id)
@@ -331,7 +351,10 @@ def cerrar(
     from app.services import fichajes as fichajes_service
 
     fichajes_service.cerrar_fichajes_abiertos(
-        session, servicio_id=servicio.id, cuando=cuando_cierre
+        session,
+        servicio_id=servicio.id,
+        cuando=cuando_cierre,
+        actor_keycloak_id=actor_keycloak_id,
     )
 
     # US-05-06 / US-05-07: liberación automática de material y vehículos
@@ -376,6 +399,7 @@ def apuntarse_propio(
     servicio_id: uuid.UUID,
     voluntario_id: uuid.UUID,
     fecha: datetime | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> InscripcionServicio:
     """CU-04. El voluntario se apunta a sí mismo a un servicio publicado."""
 
@@ -393,13 +417,26 @@ def apuntarse_propio(
     if existente is not None:
         raise YaInscrito(str(servicio_id))
 
-    return repo.upsert_inscripcion(
+    inscripcion = repo.upsert_inscripcion(
         session,
         servicio_id=servicio_id,
         voluntario_id=voluntario_id,
         tipo=TipoInscripcion.INSCRITO,
         fecha=fecha or datetime.now(),
     )
+    _registrar_evento_voluntario(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="inscripcion_servicio",
+        payload={
+            "servicio_id": str(servicio_id),
+            "servicio_titulo": servicio.titulo,
+            "tipo_servicio": servicio.tipo.value,
+            "via": "self_service",
+        },
+        actor_keycloak_id=actor_keycloak_id,
+    )
+    return inscripcion
 
 
 def desapuntarse_propio(
@@ -407,6 +444,7 @@ def desapuntarse_propio(
     *,
     servicio_id: uuid.UUID,
     voluntario_id: uuid.UUID,
+    actor_keycloak_id: str | None = None,
 ) -> None:
     """CU-04 alternativo A. El voluntario se da de baja del servicio.
 
@@ -426,3 +464,37 @@ def desapuntarse_propio(
             "no se puede cancelar una convocatoria desde el propio voluntario"
         )
     repo.delete_inscripcion(session, inscripcion)
+    _registrar_evento_voluntario(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="baja_inscripcion",
+        payload={"servicio_id": str(servicio_id)},
+        actor_keycloak_id=actor_keycloak_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helper de audit log (EN-02-04 / US-02-06)
+# ---------------------------------------------------------------------------
+
+
+def _registrar_evento_voluntario(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    tipo_str: str,
+    payload: dict | None = None,
+    actor_keycloak_id: str | None = None,
+) -> None:
+    """Audit log con import diferido (mismo patrón que voluntarios/fichajes)."""
+
+    from app.models.voluntario_evento import TipoEventoVoluntario
+    from app.repositories import voluntario_evento as eventos_repo
+
+    eventos_repo.registrar(
+        session,
+        voluntario_id=voluntario_id,
+        tipo=TipoEventoVoluntario(tipo_str),
+        payload=payload,
+        actor_keycloak_id=actor_keycloak_id,
+    )

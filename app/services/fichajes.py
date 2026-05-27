@@ -124,6 +124,7 @@ def fichar_entrada(
     servicio_id: uuid.UUID,
     voluntario_id: uuid.UUID,
     cuando: datetime | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> Fichaje:
     """CU-05. Registra la entrada del voluntario en el servicio."""
 
@@ -156,7 +157,7 @@ def fichar_entrada(
             f"en el servicio {servicio_id}"
         )
 
-    return fichajes_repo.create(
+    fichaje = fichajes_repo.create(
         session,
         data=dict(
             servicio_id=servicio_id,
@@ -166,6 +167,18 @@ def fichar_entrada(
             automatico=False,
         ),
     )
+    _registrar_evento(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="fichaje_entrada",
+        payload={
+            "servicio_id": str(servicio_id),
+            "fichaje_id": str(fichaje.id),
+            "hora_entrada": fichaje.hora_entrada.isoformat(),
+        },
+        actor_keycloak_id=actor_keycloak_id,
+    )
+    return fichaje
 
 
 def fichar_salida(
@@ -174,6 +187,7 @@ def fichar_salida(
     servicio_id: uuid.UUID,
     voluntario_id: uuid.UUID,
     cuando: datetime | None = None,
+    actor_keycloak_id: str | None = None,
 ) -> Fichaje:
     """CU-06. Registra la salida del voluntario en el servicio.
 
@@ -190,11 +204,24 @@ def fichar_salida(
             f"no hay entrada fichada pendiente de salida para "
             f"voluntario {voluntario_id} en servicio {servicio_id}"
         )
-    return fichajes_repo.update(
+    actualizado = fichajes_repo.update(
         session,
         fichaje,
         data={"hora_salida": cuando or datetime.now()},
     )
+    _registrar_evento(
+        session,
+        voluntario_id=voluntario_id,
+        tipo_str="fichaje_salida",
+        payload={
+            "servicio_id": str(servicio_id),
+            "fichaje_id": str(actualizado.id),
+            "hora_salida": actualizado.hora_salida.isoformat(),
+            "automatico": False,
+        },
+        actor_keycloak_id=actor_keycloak_id,
+    )
+    return actualizado
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +234,7 @@ def cerrar_fichajes_abiertos(
     *,
     servicio_id: uuid.UUID,
     cuando: datetime,
+    actor_keycloak_id: str | None = None,
 ) -> list[Fichaje]:
     """Sella la ``hora_salida`` de todos los fichajes abiertos del servicio.
 
@@ -214,15 +242,59 @@ def cerrar_fichajes_abiertos(
     Marca ``automatico=True`` para que se pueda distinguir esta salida
     de una explícita del voluntario. Si no hay fichajes abiertos,
     devuelve la lista vacía sin error.
+
+    Cada fichaje cerrado automáticamente genera un evento
+    ``FICHAJE_SALIDA`` con ``automatico=True`` en el payload, y el
+    actor propagado desde el cierre del servicio (típicamente el mando
+    que invocó ``cerrar()``).
     """
 
     abiertos = fichajes_repo.list_abiertos_por_servicio(session, servicio_id)
-    actualizados = [
-        fichajes_repo.update(
+    actualizados = []
+    for fichaje in abiertos:
+        cerrado = fichajes_repo.update(
             session,
             fichaje,
             data={"hora_salida": cuando, "automatico": True},
         )
-        for fichaje in abiertos
-    ]
+        actualizados.append(cerrado)
+        _registrar_evento(
+            session,
+            voluntario_id=cerrado.voluntario_id,
+            tipo_str="fichaje_salida",
+            payload={
+                "servicio_id": str(servicio_id),
+                "fichaje_id": str(cerrado.id),
+                "hora_salida": cerrado.hora_salida.isoformat(),
+                "automatico": True,
+            },
+            actor_keycloak_id=actor_keycloak_id,
+        )
     return actualizados
+
+
+# ---------------------------------------------------------------------------
+# Helper de audit log (EN-02-04 / US-02-06)
+# ---------------------------------------------------------------------------
+
+
+def _registrar_evento(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    tipo_str: str,
+    payload: dict | None = None,
+    actor_keycloak_id: str | None = None,
+) -> None:
+    """Audit log con import diferido (mismo patrón que voluntarios)."""
+
+    from app.models.voluntario_evento import TipoEventoVoluntario
+    from app.repositories import voluntario_evento as eventos_repo
+
+    eventos_repo.registrar(
+        session,
+        voluntario_id=voluntario_id,
+        tipo=TipoEventoVoluntario(tipo_str),
+        payload=payload,
+        actor_keycloak_id=actor_keycloak_id,
+    )

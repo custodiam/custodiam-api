@@ -247,7 +247,7 @@ def convocar_servicio(
     session: SessionDep,
     fcm_client: FcmAdminDep,
     ntfy_client: NtfyDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.SERVICIOS_CONVOCAR))
     ],
     body: ServicioConvocar = ServicioConvocar(),
@@ -273,6 +273,7 @@ def convocar_servicio(
             voluntario_ids=body.voluntario_ids or None,
             fcm_client=fcm_client,
             ntfy_client=ntfy_client,
+            actor_keycloak_id=user.sub,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
@@ -292,14 +293,17 @@ def convocar_servicio(
 def cerrar_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.SERVICIOS_CERRAR))
     ],
     body: ServicioCerrar = ServicioCerrar(),
 ):
     try:
         return service.cerrar(
-            session, servicio_id, observaciones=body.observaciones_cierre
+            session,
+            servicio_id,
+            observaciones=body.observaciones_cierre,
+            actor_keycloak_id=user.sub,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
@@ -332,7 +336,10 @@ def inscribirse_en_servicio(
     voluntario_id = _voluntario_id_de_user(session, user)
     try:
         service.apuntarse_propio(
-            session, servicio_id=servicio_id, voluntario_id=voluntario_id
+            session,
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            actor_keycloak_id=user.sub,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
@@ -371,7 +378,10 @@ def desapuntarse_de_servicio(
     voluntario_id = _voluntario_id_de_user(session, user)
     try:
         service.desapuntarse_propio(
-            session, servicio_id=servicio_id, voluntario_id=voluntario_id
+            session,
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            actor_keycloak_id=user.sub,
         )
     except service.NoInscrito as e:
         raise HTTPException(

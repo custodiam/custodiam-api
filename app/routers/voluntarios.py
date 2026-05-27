@@ -162,7 +162,7 @@ def crear_voluntario(
     data: VoluntarioCreate,
     session: SessionDep,
     kc_admin: KeycloakAdminDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_CREAR))
     ],
 ):
@@ -209,7 +209,12 @@ def crear_voluntario(
 
     # 3. Persistencia en BD.
     try:
-        v = service.crear(session, data=data, keycloak_id=keycloak_id)
+        v = service.crear(
+            session,
+            data=data,
+            keycloak_id=keycloak_id,
+            actor_keycloak_id=user.sub,
+        )
     except service.DniDuplicado as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -320,7 +325,7 @@ def dar_baja_voluntario(
     voluntario_id: uuid.UUID,
     session: SessionDep,
     kc_admin: KeycloakAdminDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_DAR_BAJA))
     ],
 ):
@@ -337,7 +342,9 @@ def dar_baja_voluntario(
     """
 
     try:
-        voluntario = service.dar_baja(session, voluntario_id)
+        voluntario = service.dar_baja(
+            session, voluntario_id, actor_keycloak_id=user.sub
+        )
     except service.VoluntarioNoEncontrado as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -368,7 +375,7 @@ def anonimizar_voluntario(
     voluntario_id: uuid.UUID,
     session: SessionDep,
     kc_admin: KeycloakAdminDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser,
         Depends(require_permission(Permission.SISTEMA_EXPORTAR_RGPD)),
     ],
@@ -394,7 +401,7 @@ def anonimizar_voluntario(
         ) from e
     keycloak_id_antes = actual.keycloak_id
 
-    service.anonimizar(session, voluntario_id)
+    service.anonimizar(session, voluntario_id, actor_keycloak_id=user.sub)
 
     if keycloak_id_antes:
         try:
@@ -477,7 +484,7 @@ def asignar_rol_a_voluntario(
     data: AsignarRolRequest,
     session: SessionDep,
     kc_admin: KeycloakAdminDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_EDITAR))
     ],
 ):
@@ -547,7 +554,10 @@ def asignar_rol_a_voluntario(
 
     # 3. Persistencia en BD.
     asignacion, _rol = service.asignar_rol(
-        session, voluntario_id=voluntario_id, rol_id=data.rol_id
+        session,
+        voluntario_id=voluntario_id,
+        rol_id=data.rol_id,
+        actor_keycloak_id=user.sub,
     )
 
     return VoluntarioRolResponse(
@@ -570,7 +580,7 @@ def quitar_rol_a_voluntario(
     rol_id: uuid.UUID,
     session: SessionDep,
     kc_admin: KeycloakAdminDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_EDITAR))
     ],
 ):
@@ -625,7 +635,10 @@ def quitar_rol_a_voluntario(
             ) from e
 
     asignacion, _rol = service.quitar_rol(
-        session, voluntario_id=voluntario_id, rol_id=rol_id
+        session,
+        voluntario_id=voluntario_id,
+        rol_id=rol_id,
+        actor_keycloak_id=user.sub,
     )
 
     return VoluntarioRolResponse(
