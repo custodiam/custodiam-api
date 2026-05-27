@@ -11,6 +11,7 @@ from app.routers import (
     inventario,
     roles,
     servicios,
+    voluntario_evento,
     voluntarios,
 )
 
@@ -65,3 +66,6 @@ app.include_router(
 )
 app.include_router(dispositivos.router, prefix=f"/api/{settings.api_version}")
 app.include_router(disponibilidad.router, prefix=f"/api/{settings.api_version}")
+app.include_router(
+    voluntario_evento.router, prefix=f"/api/{settings.api_version}"
+)
