@@ -416,6 +416,56 @@ def anonimizar_voluntario(
 # ---------------------------------------------------------------------------
 
 
+@router.get(
+    "/{voluntario_id}/roles",
+    response_model=list[VoluntarioRolResponse],
+    summary="Listar roles activos de un voluntario (EN-02-05 follow-up)",
+)
+def listar_roles_voluntario(
+    voluntario_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_VER_FICHA))
+    ],
+):
+    """Devuelve las asignaciones de rol **activas** del voluntario.
+
+    Espejo de la información que tiene el JWT del usuario logueado en
+    ``GET /me/roles``, pero accesible para cualquier voluntario por id
+    (gated por ``voluntarios.ver_ficha`` igual que GET /voluntarios/{id}).
+    Cada asignación incluye ``rol_nombre`` para que el cliente pinte la
+    ficha sin hacer un segundo round-trip al catálogo.
+    """
+
+    from app.repositories import voluntarios as repo
+
+    voluntario = repo.get(session, voluntario_id)
+    if voluntario is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {voluntario_id}",
+        )
+
+    asignaciones = repo.list_asignaciones_activas(session, voluntario_id)
+    # Cargamos los nombres de rol en una sola pasada para evitar N+1.
+    rol_ids = {a.rol_id for a in asignaciones}
+    nombres_por_id = {
+        rol_id: (repo.get_rol(session, rol_id).nombre)
+        for rol_id in rol_ids
+    }
+    return [
+        VoluntarioRolResponse(
+            id=a.id,
+            voluntario_id=a.voluntario_id,
+            rol_id=a.rol_id,
+            rol_nombre=nombres_por_id[a.rol_id],
+            fecha_desde=a.fecha_desde,
+            fecha_hasta=a.fecha_hasta,
+        )
+        for a in asignaciones
+    ]
+
+
 @router.post(
     "/{voluntario_id}/roles",
     response_model=VoluntarioRolResponse,

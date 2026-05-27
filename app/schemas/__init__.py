@@ -47,6 +47,7 @@ from app.schemas.servicio import (
 )
 from app.schemas.voluntario import (
     AsignarRolRequest,
+    RolResponse,
     VoluntarioBase,
     VoluntarioCreate,
     VoluntarioResponse,
@@ -71,6 +72,7 @@ __all__ = [
     "FichajeResponse",
     "HorasAcumuladasResponse",
     "InscripcionServicioResponse",
+    "RolResponse",
     "ServicioBase",
     "ServicioCerrar",
     "ServicioConvocar",

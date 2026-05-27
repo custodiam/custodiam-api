@@ -122,6 +122,25 @@ class VoluntarioResponse(VoluntarioBase):
 # ---------------------------------------------------------------------------
 
 
+class RolResponse(BaseModel):
+    """Entrada del catálogo de roles para `GET /roles`.
+
+    Pensado para que el cliente construya selectores de rol sin un
+    segundo round-trip. No incluye ``permisos`` (campo JSONB del modelo)
+    porque la matriz canónica vive en ``app/core/permissions.py`` y el
+    cliente la espeja como ``Permission`` enum en
+    ``custodiam-app/lib/infrastructure/auth/permissions.dart`` (lockstep
+    ADR-013 RBAC). Exponerla aquí abriría puerta a divergencia.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    nombre: str
+    nivel: int
+    descripcion: str | None = None
+
+
 class AsignarRolRequest(BaseModel):
     """Body de ``POST /voluntarios/{id}/roles``."""
 
