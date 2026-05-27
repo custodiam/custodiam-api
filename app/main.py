@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.routers import (
     auth,
+    dispositivos,
     fichajes,
     inventario,
     roles,
@@ -61,3 +62,4 @@ app.include_router(inventario.router, prefix=f"/api/{settings.api_version}")
 app.include_router(
     inventario.servicio_router, prefix=f"/api/{settings.api_version}"
 )
+app.include_router(dispositivos.router, prefix=f"/api/{settings.api_version}")

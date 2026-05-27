@@ -35,8 +35,24 @@ class Settings(BaseSettings):
     # permisos de administración. No requiere configuración extra.
     keycloak_admin_client_id: str = "admin-cli"
 
-    # ntfy
+    # ntfy (canal redundante de notificaciones — Epic E06)
+    # Mismo patrón opt-in que la Admin API de Keycloak: si `ntfy_enabled`
+    # es False, el cliente no contacta con el servidor y todas las
+    # operaciones son no-op. El topic por defecto se usa cuando el
+    # caller no especifica uno (típicamente avisos generales); las
+    # emergencias usan un topic dedicado.
     ntfy_url: str = "http://localhost:8090"
+    ntfy_enabled: bool = False
+    ntfy_default_topic: str = "custodiam-emergencias"
+
+    # Firebase Cloud Messaging (Epic E06)
+    # Si `fcm_service_account_json_path` está vacío el cliente opera en
+    # modo deshabilitado (no envía, no contacta con Google). En
+    # producción debe apuntar al JSON de cuenta de servicio descargado
+    # desde la consola de Firebase. `fcm_project_id` lo redundamos en
+    # config para no obligar a leer el JSON al inicializar el cliente.
+    fcm_service_account_json_path: str = ""
+    fcm_project_id: str = ""
 
     # App
     debug: bool = False

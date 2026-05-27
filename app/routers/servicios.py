@@ -35,11 +35,15 @@ from app.schemas.servicio import (
     VoluntarioInscritoResponse,
 )
 from app.services import servicios as service
+from app.services.fcm_admin import FcmAdminClient, get_fcm_admin
+from app.services.ntfy_client import NtfyClient, get_ntfy_client
 
 router = APIRouter(prefix="/servicios", tags=["servicios"])
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+FcmAdminDep = Annotated[FcmAdminClient, Depends(get_fcm_admin)]
+NtfyDep = Annotated[NtfyClient, Depends(get_ntfy_client)]
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +245,8 @@ def publicar_servicio(
 def convocar_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
+    fcm_client: FcmAdminDep,
+    ntfy_client: NtfyDep,
     _: Annotated[
         CurrentUser, Depends(require_permission(Permission.SERVICIOS_CONVOCAR))
     ],
@@ -252,11 +258,21 @@ def convocar_servicio(
     (US-03-04). Si trae ids, solo esos (US-03-05). Si el servicio no
     está aún en ACTIVO, intenta la transición a ACTIVO; si la transición
     no es válida (p. ej. un preventivo en borrador), devuelve 409.
+
+    El fan-out a Firebase Cloud Messaging y a ntfy (Epic E06) se dispara
+    automáticamente tras crear las inscripciones; ambos clientes están
+    inyectados aquí y delegan en :mod:`app.services.notificaciones`. Si
+    los clientes están deshabilitados en config, el envío es no-op y la
+    convocatoria se materializa igual en BD.
     """
 
     try:
         servicio, _inscripciones = service.convocar(
-            session, servicio_id, voluntario_ids=body.voluntario_ids or None
+            session,
+            servicio_id,
+            voluntario_ids=body.voluntario_ids or None,
+            fcm_client=fcm_client,
+            ntfy_client=ntfy_client,
         )
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
