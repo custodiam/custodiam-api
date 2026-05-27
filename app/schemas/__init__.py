@@ -29,6 +29,22 @@ from app.schemas.equipamiento import (
     TallaVoluntarioUpdate,
     TipoEquipamientoResponse,
 )
+from app.schemas.fichaje import (
+    FichajeEnServicioResponse,
+    FichajeResponse,
+    HorasAcumuladasResponse,
+)
+from app.schemas.servicio import (
+    InscripcionServicioResponse,
+    ServicioBase,
+    ServicioCerrar,
+    ServicioConvocar,
+    ServicioCreate,
+    ServicioResponse,
+    ServicioSummary,
+    ServicioUpdate,
+    VoluntarioInscritoResponse,
+)
 from app.schemas.voluntario import (
     AsignarRolRequest,
     VoluntarioBase,
@@ -51,6 +67,17 @@ __all__ = [
     "ContactoEmergenciaResponse",
     "ContactoEmergenciaUpdate",
     "CurrentUser",
+    "FichajeEnServicioResponse",
+    "FichajeResponse",
+    "HorasAcumuladasResponse",
+    "InscripcionServicioResponse",
+    "ServicioBase",
+    "ServicioCerrar",
+    "ServicioConvocar",
+    "ServicioCreate",
+    "ServicioResponse",
+    "ServicioSummary",
+    "ServicioUpdate",
     "TallaVoluntarioBase",
     "TallaVoluntarioCreate",
     "TallaVoluntarioResponse",
@@ -59,6 +86,7 @@ __all__ = [
     "TipoEquipamientoResponse",
     "VoluntarioBase",
     "VoluntarioCreate",
+    "VoluntarioInscritoResponse",
     "VoluntarioResponse",
     "VoluntarioRolResponse",
     "VoluntarioSummary",
