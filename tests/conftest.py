@@ -132,11 +132,22 @@ def _seed_catalogos(session: Session) -> None:
         ),
     ])
 
+    # Espejo exacto del seed de la migración Alembic `f76feacaf399`
+    # (EN-02-05 hotfix). Mantener los 12 alineados aquí evita que los
+    # tests pasen con un universo de roles distinto al productivo.
     session.add_all([
-        Rol(id=uuid.uuid4(), nombre="voluntario", nivel=1),
+        Rol(id=uuid.uuid4(), nombre="voluntario_practicas", nivel=1),
+        Rol(id=uuid.uuid4(), nombre="voluntario", nivel=2),
         Rol(id=uuid.uuid4(), nombre="jefe_equipo", nivel=3),
+        Rol(id=uuid.uuid4(), nombre="jefe_grupo", nivel=3),
+        Rol(id=uuid.uuid4(), nombre="jefe_seccion", nivel=4),
+        Rol(id=uuid.uuid4(), nombre="jefe_unidad", nivel=5),
+        Rol(id=uuid.uuid4(), nombre="subjefe_agrupacion", nivel=6),
+        Rol(id=uuid.uuid4(), nombre="secretario", nivel=7),
+        Rol(id=uuid.uuid4(), nombre="tesorero", nivel=7),
         Rol(id=uuid.uuid4(), nombre="jefe_agrupacion", nivel=8),
         Rol(id=uuid.uuid4(), nombre="coordinador", nivel=9),
+        Rol(id=uuid.uuid4(), nombre="admin", nivel=10),
     ])
 
 

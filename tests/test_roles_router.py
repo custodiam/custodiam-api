@@ -56,6 +56,39 @@ class TestListarRolesCatalogo:
         # Permisos NO se exponen (ADR-013 lockstep).
         assert "permisos" not in item
 
+    def test_seeded_catalog_has_all_canonical_roles(self, authenticated_client):
+        """EN-02-05 hotfix: la migración f76feacaf399 + conftest seedean
+        los 12 roles canónicos del realm.
+
+        Subset assertion para tolerar que una instalación futura añada
+        roles custom (`>=` en lugar de igualdad). El conftest siembra
+        los 12 igual que la migración, así que en CI el test pasa
+        contra la suite local; en un stack productivo recién levantado
+        (alembic upgrade head + arrancar app) los 12 también están
+        presentes — eso era exactamente el gap que el FE detectó.
+        """
+
+        r = authenticated_client.get("/api/v1/roles")
+        assert r.status_code == 200
+        nombres = {item["nombre"] for item in r.json()}
+        canonicos = {
+            "voluntario_practicas",
+            "voluntario",
+            "jefe_equipo",
+            "jefe_grupo",
+            "jefe_seccion",
+            "jefe_unidad",
+            "subjefe_agrupacion",
+            "jefe_agrupacion",
+            "coordinador",
+            "secretario",
+            "tesorero",
+            "admin",
+        }
+        assert canonicos <= nombres, (
+            f"faltan roles canónicos en el seed: {canonicos - nombres}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # GET /api/v1/voluntarios/{id}/roles
