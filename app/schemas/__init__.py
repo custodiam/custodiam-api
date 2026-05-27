@@ -30,9 +30,11 @@ from app.schemas.equipamiento import (
     TipoEquipamientoResponse,
 )
 from app.schemas.voluntario import (
+    AsignarRolRequest,
     VoluntarioBase,
     VoluntarioCreate,
     VoluntarioResponse,
+    VoluntarioRolResponse,
     VoluntarioSummary,
     VoluntarioUpdateAdmin,
     VoluntarioUpdateSelf,
@@ -43,6 +45,7 @@ __all__ = [
     "AcreditacionCreate",
     "AcreditacionResponse",
     "AcreditacionUpdate",
+    "AsignarRolRequest",
     "ContactoEmergenciaBase",
     "ContactoEmergenciaCreate",
     "ContactoEmergenciaResponse",
@@ -57,6 +60,7 @@ __all__ = [
     "VoluntarioBase",
     "VoluntarioCreate",
     "VoluntarioResponse",
+    "VoluntarioRolResponse",
     "VoluntarioSummary",
     "VoluntarioUpdateAdmin",
     "VoluntarioUpdateSelf",

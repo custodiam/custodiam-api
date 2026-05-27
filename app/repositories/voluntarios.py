@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, func, or_, select
 
+from app.models.rol import Rol
 from app.models.voluntario import EstadoVoluntario, Voluntario
 from app.models.voluntario_rol import VoluntarioRol
 
@@ -253,3 +254,77 @@ def count_anonimizados(session: Session) -> int:
         Voluntario.nombre.ilike("Voluntario anonimizado #%")
     )
     return int(session.exec(stmt).one())
+
+
+# ---------------------------------------------------------------------------
+# Roles (EN-02-05)
+# ---------------------------------------------------------------------------
+
+
+def get_rol(session: Session, rol_id: uuid.UUID) -> Rol | None:
+    """Devuelve un rol del catálogo por PK."""
+
+    return session.get(Rol, rol_id)
+
+
+def get_asignacion_activa(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    rol_id: uuid.UUID,
+) -> VoluntarioRol | None:
+    """Asignación activa (sin ``fecha_hasta``) del par voluntario+rol."""
+
+    stmt = select(VoluntarioRol).where(
+        VoluntarioRol.voluntario_id == voluntario_id,
+        VoluntarioRol.rol_id == rol_id,
+        VoluntarioRol.fecha_hasta.is_(None),
+    )
+    return session.exec(stmt).first()
+
+
+def list_asignaciones_activas(
+    session: Session, voluntario_id: uuid.UUID
+) -> list[VoluntarioRol]:
+    """Asignaciones de rol activas del voluntario."""
+
+    stmt = select(VoluntarioRol).where(
+        VoluntarioRol.voluntario_id == voluntario_id,
+        VoluntarioRol.fecha_hasta.is_(None),
+    )
+    return list(session.exec(stmt).all())
+
+
+def crear_asignacion_rol(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    rol_id: uuid.UUID,
+    fecha_desde: date,
+) -> VoluntarioRol:
+    """Crea una asignación voluntario→rol con ``fecha_hasta=None``."""
+
+    asignacion = VoluntarioRol(
+        voluntario_id=voluntario_id,
+        rol_id=rol_id,
+        fecha_desde=fecha_desde,
+    )
+    session.add(asignacion)
+    session.commit()
+    session.refresh(asignacion)
+    return asignacion
+
+
+def cerrar_asignacion_rol(
+    session: Session,
+    asignacion: VoluntarioRol,
+    *,
+    fecha_hasta: date,
+) -> VoluntarioRol:
+    """Marca ``fecha_hasta`` para "cerrar" la asignación (soft delete)."""
+
+    asignacion.fecha_hasta = fecha_hasta
+    session.add(asignacion)
+    session.commit()
+    session.refresh(asignacion)
+    return asignacion
