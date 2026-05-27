@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
-from app.core.permissions import Permission, permissions_for_roles
-from app.core.security import get_current_user, require_permission, require_role
+from app.core.permissions import permissions_for_roles
+from app.core.security import get_current_user, require_role
 from app.schemas.auth import CurrentUser
 
 router = APIRouter(tags=["auth"])
@@ -58,23 +58,4 @@ def my_permissions(user: CurrentUser = Depends(get_current_user)):
     return {
         "roles": user.roles,
         "permissions": sorted(p.value for p in perms),
-    }
-
-
-@router.get("/voluntarios/test")
-def voluntarios_listar_test(
-    user: CurrentUser = Depends(
-        require_permission(Permission.VOLUNTARIOS_LISTAR),
-    ),
-):
-    """Endpoint de prueba protegido por permiso.
-
-    Sirve como verificación end-to-end de ``require_permission``
-    mientras E02 (módulo voluntarios) no esté implementado. Se
-    sustituye por el endpoint real cuando llegue US-02-09.
-    """
-
-    return {
-        "message": f"{user.full_name}, tienes permiso para listar voluntarios",
-        "permission_required": Permission.VOLUNTARIOS_LISTAR.value,
     }
