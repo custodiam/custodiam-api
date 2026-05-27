@@ -51,6 +51,10 @@ TEST_DATABASE_URL = os.getenv(
 # (que también es catálogo, no estado operativo). Mantenerlas seeded
 # evita reseeding caro en cada test.
 _OPERATIONAL_TABLES = (
+    "asignaciones_vehiculo",
+    "asignaciones_material",
+    "vehiculos",
+    "materiales",
     "fichajes",
     "inscripciones_servicio",
     "servicios",
