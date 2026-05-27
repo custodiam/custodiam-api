@@ -4,7 +4,12 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main]
+    # Disparar tests también en PRs hacia `develop` para que un fallo
+    # como el del PR #16 (TEST_DATABASE_URL desalineado) se detecte
+    # antes del merge en lugar de dejar `develop` en rojo. El job
+    # `build-docker` sigue protegido por su propio `if:` y solo
+    # publica imagen en push directo a `main`.
+    branches: [main, develop]
 
 jobs:
   test:
