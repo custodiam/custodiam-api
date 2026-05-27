@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     # cliente del realm, el backend lo rechaza.
     keycloak_authorized_party: str = "custodiam-app"
 
+    # Credenciales para la Admin API de Keycloak (EN-02-03).
+    # Si `keycloak_admin_password` está vacío, el cliente de Admin opera
+    # en modo "deshabilitado" (no realiza llamadas y devuelve None en
+    # las operaciones), de forma que tests, desarrollo offline y entornos
+    # de aún-no-configurado puedan ejecutarse sin necesidad de tocar KC.
+    keycloak_admin_username: str = "admin"
+    keycloak_admin_password: str = ""
+    # `admin-cli` es el cliente built-in del realm master que tiene
+    # permisos de administración. No requiere configuración extra.
+    keycloak_admin_client_id: str = "admin-cli"
+
     # ntfy
     ntfy_url: str = "http://localhost:8090"
 
