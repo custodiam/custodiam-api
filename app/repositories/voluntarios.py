@@ -267,6 +267,18 @@ def get_rol(session: Session, rol_id: uuid.UUID) -> Rol | None:
     return session.get(Rol, rol_id)
 
 
+def list_roles_catalogo(session: Session) -> list[Rol]:
+    """Devuelve todos los roles del catálogo, ordenados por nivel ascendente.
+
+    El catálogo es pequeño (~12 entradas, una por cada rol del realm de
+    Keycloak), así que se devuelve sin paginar. El frontend lo usa para
+    construir el selector de rol del formulario de asignación.
+    """
+
+    stmt = select(Rol).order_by(Rol.nivel, Rol.nombre)
+    return list(session.exec(stmt).all())
+
+
 def get_asignacion_activa(
     session: Session,
     *,
