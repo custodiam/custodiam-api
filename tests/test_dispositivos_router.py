@@ -16,7 +16,6 @@ from app.main import app
 from app.models.dispositivo import PlataformaDispositivo
 from app.repositories import dispositivos as repo
 
-
 API = "/api/v1/dispositivos"
 
 
