@@ -46,6 +46,21 @@ jobs:
       - name: Sync dependencies (including dev)
         run: uv sync --all-extras --frozen
 
+      - name: Smoke test Alembic migrations (round-trip)
+        # EN-08-38: ejecuta las migraciones contra el service container
+        # Postgres para atrapar bugs que solo se manifiestan en runtime
+        # (p. ej. `sa.text("gen_random_uuid()")` en `op.bulk_insert(...)`
+        # con psycopg3, detectado en producción local el 26-may-2026).
+        # Verifica: (1) `upgrade head` aplica todas desde BD vacía;
+        # (2) `downgrade -1` revierte la última simétricamente;
+        # (3) `upgrade head` vuelve a aplicar tras revert (idempotencia).
+        env:
+          DATABASE_URL: postgresql+psycopg://custodiam:test@localhost:5432/custodiam_test
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade -1
+          uv run alembic upgrade head
+
       - name: Lint with ruff
         run: uv run ruff check app/ tests/
 
