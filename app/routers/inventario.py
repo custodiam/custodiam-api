@@ -30,6 +30,7 @@ from app.models.material import EstadoInventario, TipoMaterial
 from app.models.vehiculo import TipoVehiculo
 from app.schemas.auth import CurrentUser
 from app.schemas.inventario import (
+    AsignacionActualResponse,
     AsignacionMaterialResponse,
     AsignacionVehiculoResponse,
     AsignarDotacionVehiculoRequest,
@@ -81,6 +82,49 @@ def _dotacion_to_response(asignacion) -> DotacionVehiculoResponse:
         material_nombre=asignacion.material.nombre,
         cantidad=asignacion.cantidad,
         fecha_asignacion=asignacion.fecha_asignacion,
+    )
+
+
+def _material_detail_response(
+    material, asignaciones, unidades: int
+) -> MaterialResponse:
+    """Ensambla la response de DETALLE de material con trazabilidad (PR1)."""
+
+    activas = [
+        AsignacionActualResponse(
+            tipo=a.tipo.value,
+            voluntario_id=a.voluntario_id,
+            servicio_id=a.servicio_id,
+            vehiculo_id=a.vehiculo_id,
+            cantidad=a.cantidad,
+            fecha_asignacion=a.fecha_asignacion,
+        )
+        for a in asignaciones
+    ]
+    return MaterialResponse.model_validate(material).model_copy(
+        update={
+            "asignaciones_activas": activas,
+            "unidades_asignadas": unidades,
+        }
+    )
+
+
+def _vehiculo_detail_response(vehiculo, asignacion) -> VehiculoResponse:
+    """Ensambla la response de DETALLE de vehículo con trazabilidad (PR1)."""
+
+    actual = None
+    if asignacion is not None:
+        actual = AsignacionActualResponse(
+            tipo="servicio",
+            servicio_id=asignacion.servicio_id,
+            servicio_titulo=(
+                asignacion.servicio.titulo if asignacion.servicio else None
+            ),
+            cantidad=1,
+            fecha_asignacion=asignacion.fecha_asignacion,
+        )
+    return VehiculoResponse.model_validate(vehiculo).model_copy(
+        update={"asignacion_actual": actual}
     )
 
 
@@ -145,12 +189,14 @@ def obtener_material(
     ],
 ):
     try:
-        return service.obtener_material(session, material_id)
+        material = service.obtener_material(session, material_id)
     except service.MaterialNoEncontrado as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Material no encontrado: {e}",
         ) from e
+    asignaciones, unidades = service.trazabilidad_material(session, material_id)
+    return _material_detail_response(material, asignaciones, unidades)
 
 
 @router.post(
@@ -417,12 +463,14 @@ def obtener_vehiculo(
     ],
 ):
     try:
-        return service.obtener_vehiculo(session, vehiculo_id)
+        vehiculo = service.obtener_vehiculo(session, vehiculo_id)
     except service.VehiculoNoEncontrado as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vehículo no encontrado: {e}",
         ) from e
+    asignacion = service.trazabilidad_vehiculo(session, vehiculo_id)
+    return _vehiculo_detail_response(vehiculo, asignacion)
 
 
 @router.post(

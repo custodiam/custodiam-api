@@ -335,6 +335,28 @@ def get_asignacion_activa_vehiculo(
     return session.exec(stmt).first()
 
 
+def get_asignacion_activa_vehiculo_con_servicio(
+    session: Session, vehiculo_id: uuid.UUID
+) -> AsignacionVehiculo | None:
+    """Asignación activa del vehículo con el ``servicio`` precargado (PR1).
+
+    Variante de :func:`get_asignacion_activa_vehiculo` que hace
+    ``selectinload`` del servicio para que la ficha de detalle pueda
+    aplanar el ``titulo`` sin un segundo viaje a BD. No se usa en el
+    listado (anti-N+1): el Summary no expone la asignación.
+    """
+
+    stmt = (
+        select(AsignacionVehiculo)
+        .where(
+            AsignacionVehiculo.vehiculo_id == vehiculo_id,
+            AsignacionVehiculo.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionVehiculo.servicio))
+    )
+    return session.exec(stmt).first()
+
+
 def list_asignaciones_activas_servicio_vehiculo(
     session: Session, servicio_id: uuid.UUID
 ) -> list[AsignacionVehiculo]:
