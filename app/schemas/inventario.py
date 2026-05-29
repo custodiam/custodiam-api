@@ -308,3 +308,38 @@ class AsignacionVehiculoResponse(BaseModel):
     fecha_devolucion: datetime | None = None
     observaciones: str | None = None
     activa: bool
+
+
+# ---------------------------------------------------------------------------
+# Ocupación / disponibilidad temporal de recursos (PR6 / Política A)
+# ---------------------------------------------------------------------------
+
+
+class ConflictoOcupacion(BaseModel):
+    """Un servicio que reserva el recurso y solapa el intervalo consultado.
+
+    El nombre ``ocupacion`` evita la colisión semántica con la
+    "disponibilidad" del voluntario (calendario mensual, módulo E02): aquí
+    se trata de la ocupación temporal de un activo de inventario por
+    servicios concretos.
+    """
+
+    servicio_id: UUID
+    fecha_inicio: datetime
+    fecha_fin: datetime | None = None
+
+
+class OcupacionRecursoResponse(BaseModel):
+    """Respuesta de ``GET .../ocupacion?desde=&hasta=`` (PR6).
+
+    - ``disponible``: ``True`` si el recurso puede comprometerse en el
+      intervalo ``[desde, hasta)`` sin colisión (vehículo: sin solape;
+      material: con stock suficiente tras descontar lo reservado por
+      servicios solapados).
+    - ``conflictos``: servicios que reservan el recurso y solapan el
+      intervalo. En material puede haber conflictos y seguir ``disponible``
+      si el stock alcanza.
+    """
+
+    disponible: bool
+    conflictos: list[ConflictoOcupacion] = Field(default_factory=list)

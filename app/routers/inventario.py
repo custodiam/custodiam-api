@@ -17,6 +17,7 @@ Ambos se montan desde ``app/main.py`` con el mismo prefix de versión.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -45,6 +46,7 @@ from app.schemas.inventario import (
     MaterialResponse,
     MaterialSummary,
     MaterialUpdate,
+    OcupacionRecursoResponse,
     VehiculoCreate,
     VehiculoResponse,
     VehiculoSummary,
@@ -58,6 +60,27 @@ servicio_router = APIRouter(
 )
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def _conflictos_json(conflictos: list[dict]) -> list[dict]:
+    """Serializa los conflictos de solape a tipos JSON-safe (PR6).
+
+    El ``detail`` de una ``HTTPException`` se serializa con el JSON encoder
+    por defecto, que no sabe de ``UUID`` ni ``datetime``; los convertimos a
+    ``str`` / ISO-8601 a mano para que el cliente reciba el detalle del
+    conflicto sin un 500.
+    """
+
+    return [
+        {
+            "servicio_id": str(c["servicio_id"]),
+            "fecha_inicio": c["fecha_inicio"].isoformat(),
+            "fecha_fin": (
+                c["fecha_fin"].isoformat() if c["fecha_fin"] is not None else None
+            ),
+        }
+        for c in conflictos
+    ]
 
 
 def _asignacion_to_response(asignacion) -> AsignacionMaterialResponse:
@@ -197,6 +220,54 @@ def obtener_material(
         ) from e
     asignaciones, unidades = service.trazabilidad_material(session, material_id)
     return _material_detail_response(material, asignaciones, unidades)
+
+
+@router.get(
+    "/material/{material_id}/ocupacion",
+    response_model=OcupacionRecursoResponse,
+    summary="Consultar ocupación temporal de un material (PR6)",
+)
+def ocupacion_material(
+    material_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.INVENTARIO_VER))
+    ],
+    desde: datetime = Query(..., description="Inicio del intervalo [desde, hasta)"),
+    hasta: datetime = Query(..., description="Fin del intervalo (exclusivo)"),
+    cantidad: int = Query(1, ge=1, description="Unidades que se quieren reservar"),
+    excluir_servicio_id: uuid.UUID | None = Query(
+        None,
+        description="Servicio a excluir del cálculo (p.ej. el propio destino)",
+    ),
+):
+    """Indica si quedan ``cantidad`` unidades libres en ``[desde, hasta)`` (PR6).
+
+    A diferencia del vehículo, ``disponible`` depende del stock: ``True`` si
+    las unidades reservadas por servicios solapados más las solicitadas no
+    superan el stock total. ``conflictos`` lista los servicios en solape.
+    """
+
+    if hasta <= desde:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'hasta' debe ser estrictamente posterior a 'desde'",
+        )
+    try:
+        disponible, conflictos = service.ocupacion_material(
+            session,
+            material_id=material_id,
+            desde=desde,
+            hasta=hasta,
+            cantidad=cantidad,
+            excluir_servicio_id=excluir_servicio_id,
+        )
+    except service.MaterialNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Material no encontrado: {e}",
+        ) from e
+    return OcupacionRecursoResponse(disponible=disponible, conflictos=conflictos)
 
 
 @router.post(
@@ -473,6 +544,51 @@ def obtener_vehiculo(
     return _vehiculo_detail_response(vehiculo, asignacion)
 
 
+@router.get(
+    "/vehiculos/{vehiculo_id}/ocupacion",
+    response_model=OcupacionRecursoResponse,
+    summary="Consultar ocupación temporal de un vehículo (PR6)",
+)
+def ocupacion_vehiculo(
+    vehiculo_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.INVENTARIO_VER))
+    ],
+    desde: datetime = Query(..., description="Inicio del intervalo [desde, hasta)"),
+    hasta: datetime = Query(..., description="Fin del intervalo (exclusivo)"),
+    excluir_servicio_id: uuid.UUID | None = Query(
+        None,
+        description="Servicio a excluir del cálculo (p.ej. el propio destino)",
+    ),
+):
+    """Indica si el vehículo está libre en ``[desde, hasta)`` (PR6).
+
+    Devuelve ``disponible`` (sin solape) y la lista de ``conflictos``
+    (servicios PUBLICADO/ACTIVO con intervalo cerrado que solapan).
+    """
+
+    if hasta <= desde:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'hasta' debe ser estrictamente posterior a 'desde'",
+        )
+    try:
+        disponible, conflictos = service.ocupacion_vehiculo(
+            session,
+            vehiculo_id=vehiculo_id,
+            desde=desde,
+            hasta=hasta,
+            excluir_servicio_id=excluir_servicio_id,
+        )
+    except service.VehiculoNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehículo no encontrado: {e}",
+        ) from e
+    return OcupacionRecursoResponse(disponible=disponible, conflictos=conflictos)
+
+
 @router.post(
     "/vehiculos",
     response_model=VehiculoResponse,
@@ -726,6 +842,11 @@ def asignar_material_servicio(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Material no encontrado: {e}",
         ) from e
+    except service.ServicioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Servicio no encontrado: {e}",
+        ) from e
     except service.MaterialNoOperativo as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -735,6 +856,11 @@ def asignar_material_servicio(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
+        ) from e
+    except service.MaterialSolapado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"mensaje": str(e), "conflictos": _conflictos_json(e.conflictos)},
         ) from e
     except service.CantidadInsuficiente as e:
         raise HTTPException(
@@ -770,10 +896,15 @@ def asignar_vehiculo_servicio(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vehículo no encontrado: {e}",
         ) from e
-    except service.VehiculoYaAsignado as e:
+    except service.ServicioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Servicio no encontrado: {e}",
+        ) from e
+    except service.VehiculoOcupado as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
+            detail={"mensaje": str(e), "conflictos": _conflictos_json(e.conflictos)},
         ) from e
     except service.VehiculoNoOperativo as e:
         raise HTTPException(
