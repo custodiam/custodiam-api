@@ -147,6 +147,37 @@ class TestRoleMatrix:
             in ROLE_PERMISSIONS["jefe_seccion"]
         )
 
+    def test_gestionar_dotacion_vehiculo_requiere_jefe_seccion_o_superior(self):
+        # PR3 (SP-09): la dotación fija de material a vehículo se gestiona
+        # con `inventario.gestionar_dotacion_vehiculo`, añadido en
+        # `_BASE_JEFE_SECCION` y heredado por jefe_unidad / subjefe /
+        # jefe_agrupacion / coordinador. No lo tienen los jefes de equipo
+        # / grupo ni los roles administrativos (secretario / tesorero).
+        for rol_sin in (
+            "voluntario",
+            "voluntario_practicas",
+            "jefe_equipo",
+            "jefe_grupo",
+            "secretario",
+            "tesorero",
+            "admin",
+        ):
+            assert (
+                Permission.INVENTARIO_GESTIONAR_DOTACION_VEHICULO
+                not in ROLE_PERMISSIONS[rol_sin]
+            ), f"El rol {rol_sin} no debería gestionar dotación de vehículo"
+        for rol_con in (
+            "jefe_seccion",
+            "jefe_unidad",
+            "subjefe_agrupacion",
+            "jefe_agrupacion",
+            "coordinador",
+        ):
+            assert (
+                Permission.INVENTARIO_GESTIONAR_DOTACION_VEHICULO
+                in ROLE_PERMISSIONS[rol_con]
+            ), f"El rol {rol_con} debería gestionar dotación de vehículo"
+
     def test_reportar_incidencia_la_puede_hacer_cualquiera(self):
         # Decisión 11: cuanto más capilar, mejor.
         for role, perms in ROLE_PERMISSIONS.items():

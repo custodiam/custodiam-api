@@ -326,6 +326,13 @@ def _validar_compatibilidad_tipo(
                 f"un material {material.tipo.value!r} no admite asignación a servicio"
             )
         return
+    if tipo_asignacion == TipoAsignacion.DOTACION_VEHICULO:
+        # Dotación fija a vehículo (PR3): sólo material PRESTABLE.
+        if material.tipo != TipoMaterial.PRESTABLE:
+            raise TipoAsignacionNoCompatible(
+                "dotación de vehículo requiere un material de tipo PRESTABLE"
+            )
+        return
     # Asignación a voluntario.
     if material.tipo == TipoMaterial.SERVICIO:
         raise TipoAsignacionNoCompatible(
@@ -512,6 +519,97 @@ def devolver_material(
         actor_keycloak_id=actor_keycloak_id,
     )
     return cerrada
+
+
+# ---------------------------------------------------------------------------
+# Dotación fija de material a vehículo (PR3 / SP-09)
+# ---------------------------------------------------------------------------
+
+
+def asignar_dotacion_vehiculo(
+    session: Session,
+    *,
+    vehiculo_id: uuid.UUID,
+    material_id: uuid.UUID,
+    cantidad: int = 1,
+    cuando: datetime | None = None,
+) -> AsignacionMaterial:
+    """Asigna material PRESTABLE como dotación fija de un vehículo (PR3).
+
+    Semántica de stock (SP-09): ``Material.cantidad`` es stock **bruto** e
+    incluye las unidades dotadas. Una unidad metida en un vehículo no puede
+    prestarse a la vez, así que la dotación cuenta como stock consumido en
+    los flujos de préstamo a voluntario (``count_unidades_asignadas_material``
+    no excluye DOTACION_VEHICULO). La asignación de dotación en sí no se
+    valida contra el stock disponible: es una decisión de gestión del
+    responsable, no una reserva con tope.
+
+    Reglas:
+
+    - El vehículo debe existir (``VehiculoNoEncontrado`` → 404).
+    - El material debe existir (``MaterialNoEncontrado`` → 404) y ser
+      PRESTABLE (``TipoAsignacionNoCompatible`` → 409).
+    - El material no puede estar en estado final / no operativo
+      (``MaterialNoOperativo`` → 409).
+    """
+
+    obtener_vehiculo(session, vehiculo_id)  # 404 si no existe
+    material = obtener_material(session, material_id)  # 404 si no existe
+
+    if material.estado not in (EstadoInventario.OPERATIVO, EstadoInventario.EN_USO):
+        raise MaterialNoOperativo(
+            f"material en estado {material.estado.value}; no se puede dotar"
+        )
+    _validar_compatibilidad_tipo(material, TipoAsignacion.DOTACION_VEHICULO)
+
+    return repo.create_asignacion_material(
+        session,
+        data=dict(
+            material_id=material_id,
+            voluntario_id=None,
+            servicio_id=None,
+            vehiculo_id=vehiculo_id,
+            tipo=TipoAsignacion.DOTACION_VEHICULO,
+            cantidad=cantidad,
+            fecha_asignacion=cuando or datetime.now(),
+        ),
+    )
+
+
+def listar_dotacion_vehiculo(
+    session: Session, vehiculo_id: uuid.UUID
+) -> list[AsignacionMaterial]:
+    """Lista la dotación fija activa de un vehículo (PR3)."""
+
+    obtener_vehiculo(session, vehiculo_id)  # 404 si no existe
+    return repo.list_dotacion_activa_vehiculo(session, vehiculo_id)
+
+
+def liberar_dotacion_vehiculo(
+    session: Session,
+    *,
+    vehiculo_id: uuid.UUID,
+    asignacion_id: uuid.UUID,
+    cuando: datetime | None = None,
+) -> AsignacionMaterial:
+    """Libera (cierra) una dotación fija de un vehículo (PR3).
+
+    Sella ``fecha_devolucion``; la fila se conserva como histórico. Si la
+    dotación no existe, no está activa, no es del vehículo indicado o no
+    es de tipo dotación, se lanza ``AsignacionNoEncontrada`` → 404.
+    """
+
+    obtener_vehiculo(session, vehiculo_id)  # 404 si no existe
+
+    asignacion = repo.get_dotacion_activa(session, asignacion_id)
+    if asignacion is None or asignacion.vehiculo_id != vehiculo_id:
+        raise AsignacionNoEncontrada(
+            f"no hay dotación activa {asignacion_id} en el vehículo {vehiculo_id}"
+        )
+
+    return repo.cerrar_asignacion_material(
+        session, asignacion, cuando=cuando or datetime.now()
+    )
 
 
 # ---------------------------------------------------------------------------
