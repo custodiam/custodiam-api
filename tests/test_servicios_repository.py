@@ -190,6 +190,28 @@ class TestInscritosCount:
         assert isinstance(full.inscripciones, list)
         assert len(full.inscripciones) == 3
 
+    def test_inscritos_count_incluye_todos_los_tipos(
+        self, db_session, servicio_publicado, make_voluntario, make_inscripcion
+    ):
+        # El COUNT no filtra por `tipo`: cuenta tanto a los que se apuntaron
+        # (INSCRITO) como a los movilizados por un mando (CONVOCADO).
+        for i in range(2):
+            vol = make_voluntario(nombre=f"Inscrito {i}")
+            make_inscripcion(
+                servicio_id=servicio_publicado.id,
+                voluntario_id=vol.id,
+                tipo=TipoInscripcion.INSCRITO,
+            )
+        convocado = make_voluntario(nombre="Convocado 0")
+        make_inscripcion(
+            servicio_id=servicio_publicado.id,
+            voluntario_id=convocado.id,
+            tipo=TipoInscripcion.CONVOCADO,
+        )
+
+        encontrado = repo.get(db_session, servicio_publicado.id)
+        assert encontrado.inscritos_count == 3
+
 
 class TestCreate:
     def test_create_persiste_servicio_borrador(self, db_session):
