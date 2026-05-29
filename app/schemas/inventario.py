@@ -15,6 +15,36 @@ from app.models.material import EstadoInventario, TipoMaterial
 from app.models.vehiculo import TipoVehiculo
 
 # ---------------------------------------------------------------------------
+# Trazabilidad del estado actual (PR1) — sólo en responses de DETALLE
+# ---------------------------------------------------------------------------
+
+
+class AsignacionActualResponse(BaseModel):
+    """Vista curada de "dónde está / a quién está asignado" un activo (PR1).
+
+    Esquema unificado para las dos lecturas de trazabilidad:
+
+    - **Material** (puede tener varias activas a la vez): cada entrada
+      lleva su ``tipo`` (PERSONAL / PRESTAMO / SERVICIO / DOTACION_VEHICULO),
+      el target correspondiente (uno de ``voluntario_id`` / ``servicio_id``
+      / ``vehiculo_id``), la ``cantidad`` y la ``fecha_asignacion``.
+    - **Vehículo** (unidad única, asignación singular): ``tipo`` es siempre
+      ``"servicio"``, ``servicio_id`` está set, ``cantidad`` es 1 y se
+      adjunta ``servicio_titulo`` (barato vía join, evita un segundo viaje).
+
+    Decisión MVP (PO): no se expone ``fecha_devolucion_prevista``.
+    """
+
+    tipo: str
+    voluntario_id: UUID | None = None
+    servicio_id: UUID | None = None
+    vehiculo_id: UUID | None = None
+    servicio_titulo: str | None = None
+    cantidad: int = 1
+    fecha_asignacion: datetime
+
+
+# ---------------------------------------------------------------------------
 # Material
 # ---------------------------------------------------------------------------
 
@@ -88,7 +118,12 @@ class MaterialSummary(BaseModel):
 
 
 class MaterialResponse(MaterialBase):
-    """Schema de respuesta completo."""
+    """Schema de respuesta completo (DETALLE).
+
+    Incluye la trazabilidad de PR1 (``asignaciones_activas`` +
+    ``unidades_asignadas``). Estos campos NO viven en
+    :class:`MaterialSummary` para no disparar N+1 en el listado.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -97,6 +132,10 @@ class MaterialResponse(MaterialBase):
     observaciones_incidencia: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    asignaciones_activas: list[AsignacionActualResponse] = Field(
+        default_factory=list
+    )
+    unidades_asignadas: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +196,12 @@ class VehiculoSummary(BaseModel):
 
 
 class VehiculoResponse(VehiculoBase):
-    """Schema de respuesta completo."""
+    """Schema de respuesta completo (DETALLE).
+
+    Incluye ``asignacion_actual`` (PR1): la asignación a servicio activa
+    del vehículo o ``None``. No vive en :class:`VehiculoSummary` para no
+    disparar N+1 en el listado.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -166,6 +210,7 @@ class VehiculoResponse(VehiculoBase):
     observaciones_incidencia: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    asignacion_actual: AsignacionActualResponse | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -169,6 +169,42 @@ def obtener_vehiculo(session: Session, vehiculo_id: uuid.UUID) -> Vehiculo:
 
 
 # ---------------------------------------------------------------------------
+# Trazabilidad del estado actual (PR1) — sólo para responses de DETALLE
+# ---------------------------------------------------------------------------
+
+
+def trazabilidad_material(
+    session: Session, material_id: uuid.UUID
+) -> tuple[list[AsignacionMaterial], int]:
+    """Asignaciones activas de un material y la suma de sus cantidades (PR1).
+
+    Devuelve la lista cruda de :class:`AsignacionMaterial` activas (sin
+    devolver) más ``unidades_asignadas`` (suma de ``cantidad``). El
+    ensamblado a schema vive en el router. Sólo se invoca desde el GET de
+    detalle: el listado (Summary) no lo expone para no disparar N+1.
+    """
+
+    activas = repo.list_asignaciones_activas_material(session, material_id)
+    unidades = sum(a.cantidad for a in activas)
+    return activas, unidades
+
+
+def trazabilidad_vehiculo(
+    session: Session, vehiculo_id: uuid.UUID
+) -> AsignacionVehiculo | None:
+    """Asignación a servicio activa de un vehículo, o ``None`` (PR1).
+
+    El vehículo es unidad única, así que la asignación es singular. El
+    servicio viene precargado (``selectinload``) para aplanar el título
+    sin un segundo viaje a BD.
+    """
+
+    return repo.get_asignacion_activa_vehiculo_con_servicio(
+        session, vehiculo_id
+    )
+
+
+# ---------------------------------------------------------------------------
 # Alta y edición de Material / Vehículo
 # ---------------------------------------------------------------------------
 
