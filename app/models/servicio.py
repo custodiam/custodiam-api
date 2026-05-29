@@ -83,6 +83,14 @@ class Servicio(SQLModel, table=True):
     fecha_fin: datetime | None = None
     ubicacion: str = Field(max_length=255)
 
+    # Coordenadas geográficas opcionales (PR2-geo, SP-09). Las aporta el
+    # cliente; el backend solo persiste (sin geocoding server-side). Los
+    # servicios históricos quedan a NULL, nunca 0.0. La validación de rango
+    # y la regla "ambos o ninguno" viven en los schemas Pydantic, no como
+    # CHECK en BD.
+    ubicacion_lat: float | None = Field(default=None)
+    ubicacion_lng: float | None = Field(default=None)
+
     # Datos opcionales del CU-01 paso 5
     numero_voluntarios: int | None = None
     notas_material: str | None = None
