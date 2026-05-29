@@ -104,6 +104,7 @@ class ServicioSummary(BaseModel):
     fecha_fin: datetime | None = None
     ubicacion: str
     numero_voluntarios: int | None = None
+    inscritos_count: int = 0
 
 
 class ServicioResponse(ServicioBase):
@@ -113,6 +114,7 @@ class ServicioResponse(ServicioBase):
 
     id: UUID
     estado: EstadoServicio
+    inscritos_count: int = 0
     observaciones_cierre: str | None = None
     creado_por_keycloak_id: str | None = None
     fecha_cierre: datetime | None = None
