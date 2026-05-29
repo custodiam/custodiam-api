@@ -183,6 +183,52 @@ class TestConvocar:
             )
 
 
+class TestInscritosCountTrasOperaciones:
+    """`inscritos_count` refleja el total real tras convocar/apuntarse."""
+
+    def test_convocar_incrementa_inscritos_count(
+        self, db_session, servicio_publicado, make_voluntario
+    ):
+        v1 = make_voluntario(nombre="Ana")
+        v2 = make_voluntario(nombre="Bea")
+        service.convocar(
+            db_session,
+            servicio_publicado.id,
+            voluntario_ids=[v1.id, v2.id],
+        )
+        s = service.obtener(db_session, servicio_publicado.id)
+        assert s.inscritos_count == 2
+
+    def test_apuntarse_incrementa_inscritos_count(
+        self, db_session, servicio_publicado, voluntario
+    ):
+        antes = service.obtener(db_session, servicio_publicado.id)
+        assert antes.inscritos_count == 0
+        service.apuntarse_propio(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=voluntario.id,
+        )
+        despues = service.obtener(db_session, servicio_publicado.id)
+        assert despues.inscritos_count == 1
+
+    def test_desapuntarse_decrementa_inscritos_count(
+        self, db_session, servicio_publicado, voluntario
+    ):
+        service.apuntarse_propio(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=voluntario.id,
+        )
+        service.desapuntarse_propio(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=voluntario.id,
+        )
+        s = service.obtener(db_session, servicio_publicado.id)
+        assert s.inscritos_count == 0
+
+
 class TestCerrar:
     def test_cerrar_servicio_activo(self, db_session, servicio_activo):
         s = service.cerrar(

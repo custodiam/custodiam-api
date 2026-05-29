@@ -59,21 +59,31 @@ def list_paginated(
     pasados se hunden al final por orden inverso de fecha_inicio).
     """
 
-    base = select(Servicio)
+    filtros = []
     if estado is not None:
-        base = base.where(Servicio.estado == estado)
+        filtros.append(Servicio.estado == estado)
     if tipo is not None:
-        base = base.where(Servicio.tipo == tipo)
+        filtros.append(Servicio.tipo == tipo)
     if q:
         pattern = f"%{q}%"
-        base = base.where(
+        filtros.append(
             or_(Servicio.titulo.ilike(pattern), Servicio.ubicacion.ilike(pattern))
         )
 
-    total_stmt = select(func.count()).select_from(base.subquery())
+    # El total cuenta solo PKs filtradas: NO selecciona el `column_property`
+    # `inscritos_count`, así que el COUNT correlacionado por fila no se
+    # ejecuta en el camino del total (evita el N+1 oculto dentro del COUNT).
+    total_stmt = select(func.count(Servicio.id))
+    for f in filtros:
+        total_stmt = total_stmt.where(f)
     total = session.exec(total_stmt).one()
 
-    items_stmt = base.order_by(Servicio.fecha_inicio.desc()).offset(skip).limit(limit)
+    items_stmt = select(Servicio)
+    for f in filtros:
+        items_stmt = items_stmt.where(f)
+    items_stmt = items_stmt.order_by(Servicio.fecha_inicio.desc()).offset(skip).limit(
+        limit
+    )
     items = list(session.exec(items_stmt).all())
     return items, int(total)
 

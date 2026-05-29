@@ -103,6 +103,116 @@ class TestListPaginated:
         assert items[0].ubicacion == "Zuera"
 
 
+class TestInscritosCount:
+    """`inscritos_count` (column_property con COUNT correlacionado).
+
+    Verifica que el conteo refleja las filas reales de
+    `InscripcionServicio`, que viaja embebido en la SELECT del listado
+    (sin N+1) y que `get_full` lo materializa junto a la lista de
+    inscripciones cargada.
+    """
+
+    def test_servicio_sin_inscripciones_cuenta_cero(
+        self, db_session, servicio_publicado
+    ):
+        encontrado = repo.get(db_session, servicio_publicado.id)
+        assert encontrado.inscritos_count == 0
+
+    @pytest.mark.parametrize("n", [1, 3, 5])
+    def test_servicio_con_n_inscripciones(
+        self, db_session, servicio_publicado, make_voluntario, make_inscripcion, n
+    ):
+        for i in range(n):
+            vol = make_voluntario(nombre=f"Voluntario {i}")
+            make_inscripcion(
+                servicio_id=servicio_publicado.id, voluntario_id=vol.id
+            )
+        encontrado = repo.get(db_session, servicio_publicado.id)
+        assert encontrado.inscritos_count == n
+
+    def test_listado_no_tiene_n_mas_uno(
+        self, db_session, make_servicio, make_voluntario, make_inscripcion
+    ):
+        # 5 servicios, cada uno con 2-3 inscripciones.
+        for s_idx in range(5):
+            servicio = make_servicio(
+                titulo=f"Servicio {s_idx}",
+                fecha_inicio=datetime(2026, 6, 1 + s_idx, 9, 0),
+            )
+            num = 2 + (s_idx % 2)  # 2 o 3 inscripciones
+            for v_idx in range(num):
+                vol = make_voluntario(nombre=f"Vol {s_idx}-{v_idx}")
+                make_inscripcion(
+                    servicio_id=servicio.id, voluntario_id=vol.id
+                )
+
+        # Contamos los SELECT que dispara `list_paginated`. Deben ser
+        # exactamente 2: el total y los items (con el COUNT embebido).
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+
+        statements: list[str] = []
+
+        def _before_cursor_execute(
+            conn, cursor, statement, parameters, context, executemany
+        ):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        event.listen(Engine, "before_cursor_execute", _before_cursor_execute)
+        try:
+            items, total = repo.list_paginated(db_session)
+        finally:
+            event.remove(Engine, "before_cursor_execute", _before_cursor_execute)
+
+        assert total == 5
+        assert len(items) == 5
+        # Cada servicio expone su conteo embebido sin queries adicionales.
+        counts = sorted(s.inscritos_count for s in items)
+        assert counts == [2, 2, 2, 3, 3]
+        assert len(statements) == 2, (
+            f"esperaba 2 SELECT (total + items), hubo {len(statements)}: "
+            + "\n---\n".join(statements)
+        )
+
+    def test_get_full_devuelve_count_y_lista_cargada(
+        self, db_session, servicio_publicado, make_voluntario, make_inscripcion
+    ):
+        for i in range(3):
+            vol = make_voluntario(nombre=f"Voluntario {i}")
+            make_inscripcion(
+                servicio_id=servicio_publicado.id, voluntario_id=vol.id
+            )
+        full = repo.get_full(db_session, servicio_publicado.id)
+        assert full is not None
+        assert full.inscritos_count == 3
+        # La relación sigue cargada (la usan otras rutas).
+        assert isinstance(full.inscripciones, list)
+        assert len(full.inscripciones) == 3
+
+    def test_inscritos_count_incluye_todos_los_tipos(
+        self, db_session, servicio_publicado, make_voluntario, make_inscripcion
+    ):
+        # El COUNT no filtra por `tipo`: cuenta tanto a los que se apuntaron
+        # (INSCRITO) como a los movilizados por un mando (CONVOCADO).
+        for i in range(2):
+            vol = make_voluntario(nombre=f"Inscrito {i}")
+            make_inscripcion(
+                servicio_id=servicio_publicado.id,
+                voluntario_id=vol.id,
+                tipo=TipoInscripcion.INSCRITO,
+            )
+        convocado = make_voluntario(nombre="Convocado 0")
+        make_inscripcion(
+            servicio_id=servicio_publicado.id,
+            voluntario_id=convocado.id,
+            tipo=TipoInscripcion.CONVOCADO,
+        )
+
+        encontrado = repo.get(db_session, servicio_publicado.id)
+        assert encontrado.inscritos_count == 3
+
+
 class TestCreate:
     def test_create_persiste_servicio_borrador(self, db_session):
         s = repo.create(

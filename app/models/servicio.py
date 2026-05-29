@@ -22,8 +22,9 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column
+from sqlalchemy import Column, func, select
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.orm import column_property
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.models.base import created_at_column, pk_uuid, updated_at_column
@@ -105,3 +106,22 @@ class Servicio(SQLModel, table=True):
 
     def __repr__(self) -> str:
         return f"<Servicio {self.titulo!r} ({self.tipo.value}/{self.estado.value})>"
+
+
+# El conteo de inscritos se expone como ``column_property`` con un
+# subquery escalar correlacionado: un COUNT sobre `InscripcionServicio`
+# que viaja embebido en cualquier `SELECT Servicio` (sin N+1) y se
+# resuelve en lectura, no como columna física (Alembic NO genera DDL).
+#
+# Se declara fuera de la clase, tras importar `InscripcionServicio` en
+# tiempo de ejecución, para no introducir un ciclo de importación: el
+# modelo de inscripción ya importa `Servicio` bajo `TYPE_CHECKING`.
+from app.models.inscripcion_servicio import InscripcionServicio  # noqa: E402
+
+Servicio.inscritos_count = column_property(
+    select(func.count(InscripcionServicio.id))
+    .where(InscripcionServicio.servicio_id == Servicio.id)
+    .correlate_except(InscripcionServicio)
+    .scalar_subquery(),
+    deferred=False,
+)

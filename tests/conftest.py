@@ -503,6 +503,40 @@ def make_servicio(db_session):
 
 
 @pytest.fixture
+def make_inscripcion(db_session):
+    """Inserta una fila `InscripcionServicio` para un par (servicio, voluntario).
+
+    Es la fuente de filas que alimenta `inscritos_count`. No reutiliza el
+    repository para mantener la factoría independiente de la lógica de
+    upsert (un test de conteo no debe depender de la promoción de tipos).
+    """
+
+    from datetime import datetime as _dt
+
+    from app.models.inscripcion_servicio import InscripcionServicio, TipoInscripcion
+
+    def _factory(
+        *,
+        servicio_id,
+        voluntario_id,
+        tipo: TipoInscripcion = TipoInscripcion.INSCRITO,
+        fecha: _dt = _dt(2026, 6, 1, 10, 0),
+    ):
+        inscripcion = InscripcionServicio(
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            tipo=tipo,
+            fecha=fecha,
+        )
+        db_session.add(inscripcion)
+        db_session.commit()
+        db_session.refresh(inscripcion)
+        return inscripcion
+
+    return _factory
+
+
+@pytest.fixture
 def servicio_borrador(make_servicio):
     """Servicio en estado BORRADOR, listo para publicar / convocar."""
 
