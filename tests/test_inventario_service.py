@@ -371,13 +371,15 @@ class TestAsignarVehiculoAServicio:
                 servicio_id=servicio_publicado.id,
             )
 
-    def test_vehiculo_ya_asignado_falla(
+    def test_vehiculo_solapado_falla(
         self,
         db_session,
         servicio_publicado,
         make_servicio,
         vehiculo,
     ):
+        # Dos servicios publicados con el mismo intervalo por defecto
+        # (09-14) solapan: el segundo bloquea (PR6 / Política A).
         from app.models.servicio import EstadoServicio
 
         otro = make_servicio(estado=EstadoServicio.PUBLICADO)
@@ -386,7 +388,7 @@ class TestAsignarVehiculoAServicio:
             vehiculo_id=vehiculo.id,
             servicio_id=servicio_publicado.id,
         )
-        with pytest.raises(service.VehiculoYaAsignado):
+        with pytest.raises(service.VehiculoOcupado):
             service.asignar_vehiculo_a_servicio(
                 db_session,
                 vehiculo_id=vehiculo.id,

@@ -49,8 +49,10 @@ from sqlmodel import Session
 from app.models.asignacion_material import AsignacionMaterial, TipoAsignacion
 from app.models.asignacion_vehiculo import AsignacionVehiculo
 from app.models.material import EstadoInventario, Material, TipoMaterial
+from app.models.servicio import Servicio, TipoServicio
 from app.models.vehiculo import Vehiculo
 from app.repositories import inventario as repo
+from app.repositories import servicios as servicios_repo
 
 if TYPE_CHECKING:
     from app.schemas.inventario import (
@@ -80,6 +82,10 @@ class VehiculoNoEncontrado(InventarioError):  # noqa: N818 — castellano
 
 class AsignacionNoEncontrada(InventarioError):  # noqa: N818 — castellano
     pass
+
+
+class ServicioNoEncontrado(InventarioError):  # noqa: N818 — castellano
+    """El servicio destino de la asignación no existe."""
 
 
 class MaterialNoOperativo(InventarioError):  # noqa: N818 — castellano
@@ -112,6 +118,28 @@ class EstadoIncidenciaInvalido(InventarioError):  # noqa: N818 — castellano
 
 class MaterialEnEstadoFinal(InventarioError):  # noqa: N818 — castellano
     """El material/vehículo está en PERDIDO y no admite cambios de estado."""
+
+
+class RecursoSolapado(InventarioError):  # noqa: N818 — castellano
+    """Un recurso ya está comprometido en otro servicio en el mismo intervalo.
+
+    Base de los conflictos de disponibilidad temporal (PR6 / Política A).
+    Lleva ``conflictos``: lista de ``{servicio_id, fecha_inicio, fecha_fin}``
+    de los servicios que solapan el intervalo solicitado, para que el router
+    pueda devolverlos al cliente.
+    """
+
+    def __init__(self, message: str, conflictos: list[dict]) -> None:
+        super().__init__(message)
+        self.conflictos = conflictos
+
+
+class VehiculoOcupado(RecursoSolapado):  # noqa: N818 — castellano
+    """El vehículo ya está asignado a otro servicio que solapa el intervalo."""
+
+
+class MaterialSolapado(RecursoSolapado):  # noqa: N818 — castellano
+    """No quedan unidades de material libres en el intervalo solicitado."""
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +230,101 @@ def trazabilidad_vehiculo(
     return repo.get_asignacion_activa_vehiculo_con_servicio(
         session, vehiculo_id
     )
+
+
+# ---------------------------------------------------------------------------
+# Disponibilidad temporal / no-solape de recursos (PR6 / Política A)
+# ---------------------------------------------------------------------------
+#
+# Política A (confirmada por el PO):
+#
+# 1. Solape semiabierto ``[inicio, fin)``: dos intervalos solapan sii
+#    ``inicio_A < fin_B AND inicio_B < fin_A``. Encadenados (``fin_A ==
+#    inicio_B``) NO solapan.
+# 2. ``fecha_fin`` NULL no reserva: ni el intervalo existente ni el nuevo
+#    cuentan para el solape si su fin es abierto. Se gestiona a mano.
+# 3. Borrador no reserva: sólo PUBLICADO / ACTIVO bloquean (filtro en repo).
+# 4. Emergencia hace override: si el servicio destino es EMERGENCIA se
+#    permite la asignación pese a solapar un preventivo. NO se libera
+#    automáticamente la asignación del otro servicio (gestión humana).
+
+
+def _conflictos_payload(servicios: list[Servicio]) -> list[dict]:
+    """Serializa los servicios en conflicto para la excepción / la response."""
+
+    return [
+        {
+            "servicio_id": s.id,
+            "fecha_inicio": s.fecha_inicio,
+            "fecha_fin": s.fecha_fin,
+        }
+        for s in servicios
+    ]
+
+
+def _obtener_servicio(session: Session, servicio_id: uuid.UUID) -> Servicio:
+    servicio = servicios_repo.get(session, servicio_id)
+    if servicio is None:
+        raise ServicioNoEncontrado(str(servicio_id))
+    return servicio
+
+
+def ocupacion_vehiculo(
+    session: Session,
+    *,
+    vehiculo_id: uuid.UUID,
+    desde: datetime,
+    hasta: datetime,
+    excluir_servicio_id: uuid.UUID | None = None,
+) -> tuple[bool, list[dict]]:
+    """Consulta de ocupación de un vehículo en ``[desde, hasta)`` (PR6).
+
+    Devuelve ``(disponible, conflictos)``. ``disponible`` es ``True`` si no
+    hay ningún servicio que reserve y solape el intervalo. ``conflictos`` es
+    la lista de ``{servicio_id, fecha_inicio, fecha_fin}`` en solape.
+    """
+
+    obtener_vehiculo(session, vehiculo_id)  # 404 si no existe
+    conflictos = repo.find_servicios_solapados_vehiculo(
+        session,
+        vehiculo_id=vehiculo_id,
+        inicio=desde,
+        fin=hasta,
+        excluir_servicio_id=excluir_servicio_id,
+    )
+    return (len(conflictos) == 0, _conflictos_payload(conflictos))
+
+
+def ocupacion_material(
+    session: Session,
+    *,
+    material_id: uuid.UUID,
+    desde: datetime,
+    hasta: datetime,
+    cantidad: int = 1,
+    excluir_servicio_id: uuid.UUID | None = None,
+) -> tuple[bool, list[dict]]:
+    """Consulta de ocupación de un material en ``[desde, hasta)`` (PR6).
+
+    El material es stock: ``disponible`` es ``True`` si las unidades ya
+    reservadas por servicios solapados más la ``cantidad`` solicitada no
+    superan el stock total del material. ``conflictos`` lista los servicios
+    que solapan (con cualquier reserva), independientemente de si el stock
+    alcanza o no, para dar visibilidad de quién comparte el intervalo.
+    """
+
+    material = obtener_material(session, material_id)
+    solapes = repo.find_solapes_material(
+        session,
+        material_id=material_id,
+        inicio=desde,
+        fin=hasta,
+        excluir_servicio_id=excluir_servicio_id,
+    )
+    reservadas = sum(unidades for _, unidades in solapes)
+    disponible = reservadas + cantidad <= material.cantidad
+    conflictos = _conflictos_payload([servicio for servicio, _ in solapes])
+    return (disponible, conflictos)
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +593,25 @@ def asignar_material_a_servicio(
     cantidad: int = 1,
     cuando: datetime | None = None,
 ) -> AsignacionMaterial:
-    """CU-22 / US-05-06."""
+    """CU-22 / US-05-06. Bloqueo por solape de intervalo (PR6 / Política A).
+
+    El material es stock (a diferencia del vehículo, unidad única): el
+    chequeo binario "ya hay asignación a servicio" se sustituye por un
+    cálculo de unidades disponibles **en el intervalo del servicio
+    destino**. Unidades comprometidas en servicios disjuntos no restan;
+    sólo las de servicios que solapan ``[inicio, fin)``.
+
+    Además se descuentan las unidades comprometidas fuera de servicio
+    (PERSONAL / PRESTAMO / DOTACION_VEHICULO), que son globales (no tienen
+    intervalo): una unidad prestada a un voluntario no está disponible para
+    ningún servicio, solape o no.
+
+    Reglas de Política A idénticas al vehículo: ``fecha_fin`` NULL no
+    evalúa solape de servicio (sólo cuenta el stock global comprometido);
+    borrador no reserva (filtro en repo); EMERGENCIA hace override del
+    bloqueo por solape (pero el stock físico total sigue siendo un tope
+    duro: no se pueden asignar más unidades de las que existen).
+    """
 
     material = obtener_material(session, material_id)
     if material.estado not in (EstadoInventario.OPERATIVO, EstadoInventario.EN_USO):
@@ -479,14 +620,46 @@ def asignar_material_a_servicio(
         )
     _validar_compatibilidad_tipo(material, TipoAsignacion.SERVICIO)
 
-    asignadas_no_servicio = repo.count_unidades_asignadas_material(
+    servicio = _obtener_servicio(session, servicio_id)
+
+    # Unidades comprometidas globalmente fuera de servicio (sin intervalo).
+    comprometidas_no_servicio = repo.count_unidades_asignadas_material(
         session, material_id, excluir_tipo=TipoAsignacion.SERVICIO
     )
-    stock_para_servicio = material.cantidad - asignadas_no_servicio
-    if cantidad > stock_para_servicio:
+
+    es_emergencia = servicio.tipo == TipoServicio.EMERGENCIA
+    # Unidades reservadas por OTROS servicios que solapan el intervalo
+    # destino. Sólo se computan si el destino tiene intervalo cerrado y no
+    # es emergencia (regla 2 + regla 4 de Política A).
+    reservadas_solapadas = 0
+    solapes: list[tuple[Servicio, int]] = []
+    if servicio.fecha_fin is not None and not es_emergencia:
+        solapes = repo.find_solapes_material(
+            session,
+            material_id=material_id,
+            inicio=servicio.fecha_inicio,
+            fin=servicio.fecha_fin,
+            excluir_servicio_id=servicio_id,
+        )
+        reservadas_solapadas = sum(unidades for _, unidades in solapes)
+
+    disponibles = (
+        material.cantidad - comprometidas_no_servicio - reservadas_solapadas
+    )
+    if cantidad > disponibles:
+        # Si hay solape concreto, lo señalamos como conflicto (Política A);
+        # si el déficit viene sólo del stock global comprometido, es la
+        # CantidadInsuficiente clásica.
+        if solapes:
+            raise MaterialSolapado(
+                f"no quedan unidades libres en el intervalo: solicitadas "
+                f"{cantidad}, disponibles {max(disponibles, 0)} "
+                f"(reservadas por solape {reservadas_solapadas})",
+                _conflictos_payload([servicio for servicio, _ in solapes]),
+            )
         raise CantidadInsuficiente(
             f"stock insuficiente: solicitadas {cantidad}, "
-            f"disponibles para servicio {stock_para_servicio}"
+            f"disponibles para servicio {max(disponibles, 0)}"
         )
 
     asignacion = repo.create_asignacion_material(
@@ -687,21 +860,49 @@ def asignar_vehiculo_a_servicio(
     servicio_id: uuid.UUID,
     cuando: datetime | None = None,
 ) -> AsignacionVehiculo:
+    """CU-22 / US-05-07. Bloqueo por solape de intervalo (PR6 / Política A).
+
+    Sustituye el antiguo chequeo binario "ya asignado" por la detección de
+    solape temporal contra el resto de servicios que reservan el vehículo en
+    el intervalo del servicio destino. Reglas en :data:`Política A`:
+
+    - El servicio destino debe existir (``ServicioNoEncontrado`` → 404).
+    - El vehículo debe estar OPERATIVO **o** EN_USO. Un vehículo EN_USO por
+      otro servicio sigue siendo asignable a un intervalo disjunto; el estado
+      ``EN_USO`` ya no implica indisponibilidad global (eso lo decide el
+      solape). Sólo AVERIADO / PERDIDO bloquean por estado.
+    - Si el destino tiene ``fecha_fin`` NULL no se evalúa solape (no reserva,
+      gestión manual) — se permite siempre que el estado sea sano.
+    - Si solapa y el destino NO es EMERGENCIA → ``VehiculoOcupado``.
+    - Si el destino es EMERGENCIA → se permite pese al solape (override); no
+      se libera la asignación del preventivo (gestión humana).
+    """
+
     vehiculo = obtener_vehiculo(session, vehiculo_id)
-    # Orden de checks: primero "ya asignado", luego "no operativo".
-    # Si está EN_USO por una asignación previa, lo razonable es decirle
-    # al cliente "ese vehículo está ocupado" (causa primaria) antes que
-    # "no está operativo" (síntoma del flujo anterior).
-    if (
-        repo.get_asignacion_activa_vehiculo(session, vehiculo_id) is not None
-    ):
-        raise VehiculoYaAsignado(
-            f"el vehículo {vehiculo_id} ya está asignado a un servicio activo"
-        )
-    if vehiculo.estado != EstadoInventario.OPERATIVO:
+    servicio = _obtener_servicio(session, servicio_id)
+
+    if vehiculo.estado in (EstadoInventario.AVERIADO, EstadoInventario.PERDIDO):
         raise VehiculoNoOperativo(
             f"vehículo en estado {vehiculo.estado.value}; no se puede asignar"
         )
+
+    es_emergencia = servicio.tipo == TipoServicio.EMERGENCIA
+    # Sólo se evalúa solape si el destino tiene intervalo cerrado (regla 2)
+    # y no es una emergencia (regla 4: override).
+    if servicio.fecha_fin is not None and not es_emergencia:
+        conflictos = repo.find_servicios_solapados_vehiculo(
+            session,
+            vehiculo_id=vehiculo_id,
+            inicio=servicio.fecha_inicio,
+            fin=servicio.fecha_fin,
+            excluir_servicio_id=servicio_id,
+        )
+        if conflictos:
+            raise VehiculoOcupado(
+                f"el vehículo {vehiculo_id} ya está comprometido en "
+                f"{len(conflictos)} servicio(s) que solapan el intervalo",
+                _conflictos_payload(conflictos),
+            )
 
     asignacion = repo.create_asignacion_vehiculo(
         session,
@@ -711,10 +912,12 @@ def asignar_vehiculo_a_servicio(
             fecha_asignacion=cuando or datetime.now(),
         ),
     )
-    # Vehículo único: pasa a EN_USO.
-    repo.set_estado_vehiculo(
-        session, vehiculo, nuevo_estado=EstadoInventario.EN_USO
-    )
+    # Vehículo único: pasa a EN_USO. Idempotente si ya lo estaba por otra
+    # asignación a un intervalo disjunto.
+    if vehiculo.estado != EstadoInventario.EN_USO:
+        repo.set_estado_vehiculo(
+            session, vehiculo, nuevo_estado=EstadoInventario.EN_USO
+        )
     return asignacion
 
 
