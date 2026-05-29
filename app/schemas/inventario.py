@@ -225,6 +225,32 @@ class AsignacionMaterialResponse(BaseModel):
     activa: bool
 
 
+class AsignarDotacionVehiculoRequest(BaseModel):
+    """Body de `POST /inventario/vehiculos/{id}/dotacion` (PR3).
+
+    Asigna material PRESTABLE como dotación fija de un vehículo. El
+    ``vehiculo_id`` viaja en la ruta, no en el body.
+    """
+
+    material_id: UUID
+    cantidad: int = Field(default=1, ge=1)
+
+
+class DotacionVehiculoResponse(BaseModel):
+    """Vista curada de una dotación fija de vehículo (PR3).
+
+    No expone el ``AsignacionMaterial`` crudo (con los tres targets
+    mezclados): sólo los campos relevantes para el cliente, aplanando el
+    nombre del material para evitar un segundo viaje al servidor.
+    """
+
+    id: UUID
+    material_id: UUID
+    material_nombre: str
+    cantidad: int
+    fecha_asignacion: datetime
+
+
 class AsignacionVehiculoResponse(BaseModel):
     """Schema de respuesta de una asignación de vehículo."""
 

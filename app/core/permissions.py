@@ -51,6 +51,7 @@ class Permission(StrEnum):
     INVENTARIO_PRESTAR_TEMPORAL = "inventario.prestar_temporal"
     INVENTARIO_REGISTRAR_DEVOLUCION = "inventario.registrar_devolucion"
     INVENTARIO_ASIGNAR_A_SERVICIO = "inventario.asignar_a_servicio"
+    INVENTARIO_GESTIONAR_DOTACION_VEHICULO = "inventario.gestionar_dotacion_vehiculo"
     INVENTARIO_REPORTAR_INCIDENCIA = "inventario.reportar_incidencia"
     INVENTARIO_VER = "inventario.ver"
 
@@ -116,6 +117,7 @@ _BASE_JEFE_EQUIPO: frozenset[Permission] = _BASE_VOLUNTARIO | frozenset({
 
 _BASE_JEFE_SECCION: frozenset[Permission] = _BASE_JEFE_EQUIPO | frozenset({
     Permission.INVENTARIO_ASIGNAR_EQUIPAMIENTO_PERSONAL,
+    Permission.INVENTARIO_GESTIONAR_DOTACION_VEHICULO,
 })
 
 _BASE_JEFE_UNIDAD: frozenset[Permission] = _BASE_JEFE_SECCION | frozenset({

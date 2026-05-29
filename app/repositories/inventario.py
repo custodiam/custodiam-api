@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, func, or_, select
 
 from app.models.asignacion_material import AsignacionMaterial, TipoAsignacion
@@ -252,6 +253,41 @@ def cerrar_asignacion_material(
     session.commit()
     session.refresh(asignacion)
     return asignacion
+
+
+def list_dotacion_activa_vehiculo(
+    session: Session, vehiculo_id: uuid.UUID
+) -> list[AsignacionMaterial]:
+    """Dotación fija activa de un vehículo (PR3).
+
+    Usa ``selectinload`` sobre ``material`` para evitar el N+1 al
+    construir la respuesta con el nombre del material.
+    """
+
+    stmt = (
+        select(AsignacionMaterial)
+        .where(
+            AsignacionMaterial.vehiculo_id == vehiculo_id,
+            AsignacionMaterial.tipo == TipoAsignacion.DOTACION_VEHICULO,
+            AsignacionMaterial.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionMaterial.material))
+        .order_by(AsignacionMaterial.fecha_asignacion)
+    )
+    return list(session.exec(stmt).all())
+
+
+def get_dotacion_activa(
+    session: Session, asignacion_id: uuid.UUID
+) -> AsignacionMaterial | None:
+    """Recupera una dotación fija activa por id (PR3)."""
+
+    stmt = select(AsignacionMaterial).where(
+        AsignacionMaterial.id == asignacion_id,
+        AsignacionMaterial.tipo == TipoAsignacion.DOTACION_VEHICULO,
+        AsignacionMaterial.fecha_devolucion.is_(None),
+    )
+    return session.exec(stmt).first()
 
 
 def count_unidades_asignadas_material(

@@ -32,10 +32,12 @@ from app.schemas.auth import CurrentUser
 from app.schemas.inventario import (
     AsignacionMaterialResponse,
     AsignacionVehiculoResponse,
+    AsignarDotacionVehiculoRequest,
     AsignarMaterialServicioRequest,
     AsignarMaterialVoluntarioRequest,
     AsignarVehiculoServicioRequest,
     DevolverMaterialRequest,
+    DotacionVehiculoResponse,
     IncidenciaMaterialRequest,
     IncidenciaVehiculoRequest,
     MaterialCreate,
@@ -69,6 +71,16 @@ def _asignacion_to_response(asignacion) -> AsignacionMaterialResponse:
         fecha_devolucion=asignacion.fecha_devolucion,
         observaciones_devolucion=asignacion.observaciones_devolucion,
         activa=asignacion.activa,
+    )
+
+
+def _dotacion_to_response(asignacion) -> DotacionVehiculoResponse:
+    return DotacionVehiculoResponse(
+        id=asignacion.id,
+        material_id=asignacion.material_id,
+        material_nombre=asignacion.material.nombre,
+        cantidad=asignacion.cantidad,
+        fecha_asignacion=asignacion.fecha_asignacion,
     )
 
 
@@ -516,6 +528,122 @@ def reparar_vehiculo(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Vehículo — Dotación fija de material (PR3 / SP-09)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/vehiculos/{vehiculo_id}/dotacion",
+    response_model=list[DotacionVehiculoResponse],
+    summary="Listar dotación fija de un vehículo (PR3)",
+)
+def listar_dotacion_vehiculo(
+    vehiculo_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser, Depends(require_permission(Permission.INVENTARIO_VER))
+    ],
+):
+    try:
+        dotaciones = service.listar_dotacion_vehiculo(session, vehiculo_id)
+    except service.VehiculoNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehículo no encontrado: {e}",
+        ) from e
+    return [_dotacion_to_response(d) for d in dotaciones]
+
+
+@router.post(
+    "/vehiculos/{vehiculo_id}/dotacion",
+    response_model=DotacionVehiculoResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Asignar dotación fija a un vehículo (PR3)",
+)
+def asignar_dotacion_vehiculo(
+    vehiculo_id: uuid.UUID,
+    body: AsignarDotacionVehiculoRequest,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(
+            require_permission(
+                Permission.INVENTARIO_GESTIONAR_DOTACION_VEHICULO
+            )
+        ),
+    ],
+):
+    try:
+        asignacion = service.asignar_dotacion_vehiculo(
+            session,
+            vehiculo_id=vehiculo_id,
+            material_id=body.material_id,
+            cantidad=body.cantidad,
+        )
+    except service.VehiculoNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehículo no encontrado: {e}",
+        ) from e
+    except service.MaterialNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Material no encontrado: {e}",
+        ) from e
+    except service.MaterialNoOperativo as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    except service.TipoAsignacionNoCompatible as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    # `material` ya viene cargado en la sesión tras crear la asignación;
+    # refrescamos la relación para que el builder no dispare otra query.
+    session.refresh(asignacion, attribute_names=["material"])
+    return _dotacion_to_response(asignacion)
+
+
+@router.delete(
+    "/vehiculos/{vehiculo_id}/dotacion/{asignacion_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Liberar dotación fija de un vehículo (PR3)",
+)
+def liberar_dotacion_vehiculo(
+    vehiculo_id: uuid.UUID,
+    asignacion_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(
+            require_permission(
+                Permission.INVENTARIO_GESTIONAR_DOTACION_VEHICULO
+            )
+        ),
+    ],
+):
+    try:
+        service.liberar_dotacion_vehiculo(
+            session,
+            vehiculo_id=vehiculo_id,
+            asignacion_id=asignacion_id,
+        )
+    except service.VehiculoNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehículo no encontrado: {e}",
+        ) from e
+    except service.AsignacionNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
