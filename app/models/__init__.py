@@ -27,6 +27,7 @@ from app.models.tipo_acreditacion import (
     TipoAcreditacion,
 )
 from app.models.tipo_equipamiento import TipoEquipamiento
+from app.models.ubicacion import Ubicacion
 from app.models.vehiculo import TipoVehiculo, Vehiculo
 from app.models.voluntario import EstadoVoluntario, Voluntario
 from app.models.voluntario_evento import TipoEventoVoluntario, VoluntarioEvento
@@ -61,6 +62,7 @@ __all__ = [
     "TipoNotificacion",
     "TipoServicio",
     "TipoVehiculo",
+    "Ubicacion",
     "Vehiculo",
     "Voluntario",
     "VoluntarioEvento",

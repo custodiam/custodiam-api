@@ -66,6 +66,9 @@ class Permission(StrEnum):
     OFFLINE_FICHAR_PROPIO = "offline.fichar_propio"
     OFFLINE_VER_ESTADO_CONEXION = "offline.ver_estado_conexion"
 
+    # E10 — Ubicaciones / Geolocalización
+    UBICACIONES_CREAR = "ubicaciones.crear"
+
     # Administración del sistema
     SISTEMA_PANEL_ADMIN = "sistema.panel_admin"
     SISTEMA_CONFIGURACION = "sistema.configuracion"
@@ -118,6 +121,7 @@ _BASE_JEFE_EQUIPO: frozenset[Permission] = _BASE_VOLUNTARIO | frozenset({
 _BASE_JEFE_SECCION: frozenset[Permission] = _BASE_JEFE_EQUIPO | frozenset({
     Permission.INVENTARIO_ASIGNAR_EQUIPAMIENTO_PERSONAL,
     Permission.INVENTARIO_GESTIONAR_DOTACION_VEHICULO,
+    Permission.UBICACIONES_CREAR,
 })
 
 _BASE_JEFE_UNIDAD: frozenset[Permission] = _BASE_JEFE_SECCION | frozenset({
