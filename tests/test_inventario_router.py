@@ -34,6 +34,7 @@ BASE = "/api/v1/inventario"
         ("get", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion"),
         ("post", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion"),
         ("delete", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion/{uuid.uuid4()}"),
+        ("get", f"/api/v1/servicios/{uuid.uuid4()}/inventario"),
     ],
 )
 def test_endpoints_sin_token_devuelven_401(client, method, path):
@@ -477,6 +478,60 @@ class TestAsignarServicio:
             self._path_material(servicio_publicado.id),
             json={"material_id": str(m.id), "cantidad": 1},
         )
+        assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Listar recursos asignados a un servicio (R1 / Opción 1B — GET de lectura)
+# ---------------------------------------------------------------------------
+
+
+class TestListarInventarioServicio:
+    def _path(self, servicio_id):
+        return f"/api/v1/servicios/{servicio_id}/inventario"
+
+    def test_servicio_sin_recursos_devuelve_listas_vacias(
+        self, jefe_client, servicio_publicado
+    ):
+        r = jefe_client.get(self._path(servicio_publicado.id))
+        assert r.status_code == 200
+        assert r.json() == {"material": [], "vehiculos": []}
+
+    def test_lista_material_y_vehiculo_asignados(
+        self, client_for_role, servicio_publicado, make_material, vehiculo
+    ):
+        from app.models.material import TipoMaterial
+
+        c = client_for_role(["jefe_equipo"])
+        m = make_material(nombre="Conos", tipo=TipoMaterial.SERVICIO, cantidad=10)
+        c.post(
+            f"{self._path(servicio_publicado.id)}/material",
+            json={"material_id": str(m.id), "cantidad": 4},
+        )
+        c.post(
+            f"{self._path(servicio_publicado.id)}/vehiculo",
+            json={"vehiculo_id": str(vehiculo.id)},
+        )
+
+        r = c.get(self._path(servicio_publicado.id))
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["material"]) == 1
+        assert body["material"][0]["material_nombre"] == "Conos"
+        assert body["material"][0]["cantidad"] == 4
+        assert body["material"][0]["material_id"] == str(m.id)
+        assert len(body["vehiculos"]) == 1
+        assert body["vehiculos"][0]["vehiculo_id"] == str(vehiculo.id)
+        assert body["vehiculos"][0]["codigo_interno"] == vehiculo.codigo_interno
+        assert body["vehiculos"][0]["matricula"] == vehiculo.matricula
+
+    def test_servicio_inexistente_es_404(self, jefe_client):
+        r = jefe_client.get(self._path(uuid.uuid4()))
+        assert r.status_code == 404
+
+    def test_voluntario_basico_no_puede_ver(self, authenticated_client):
+        # voluntario básico NO tiene `inventario.ver`.
+        r = authenticated_client.get(self._path(uuid.uuid4()))
         assert r.status_code == 403
 
 

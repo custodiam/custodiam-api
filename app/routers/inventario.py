@@ -42,6 +42,9 @@ from app.schemas.inventario import (
     DotacionVehiculoResponse,
     IncidenciaMaterialRequest,
     IncidenciaVehiculoRequest,
+    InventarioMaterialServicioResponse,
+    InventarioServicioResponse,
+    InventarioVehiculoServicioResponse,
     MaterialCreate,
     MaterialResponse,
     MaterialSummary,
@@ -104,6 +107,30 @@ def _dotacion_to_response(asignacion) -> DotacionVehiculoResponse:
         material_id=asignacion.material_id,
         material_nombre=asignacion.material.nombre,
         cantidad=asignacion.cantidad,
+        fecha_asignacion=asignacion.fecha_asignacion,
+    )
+
+
+def _inventario_material_servicio_response(
+    asignacion,
+) -> InventarioMaterialServicioResponse:
+    return InventarioMaterialServicioResponse(
+        id=asignacion.id,
+        material_id=asignacion.material_id,
+        material_nombre=asignacion.material.nombre,
+        cantidad=asignacion.cantidad,
+        fecha_asignacion=asignacion.fecha_asignacion,
+    )
+
+
+def _inventario_vehiculo_servicio_response(
+    asignacion,
+) -> InventarioVehiculoServicioResponse:
+    return InventarioVehiculoServicioResponse(
+        id=asignacion.id,
+        vehiculo_id=asignacion.vehiculo_id,
+        codigo_interno=asignacion.vehiculo.codigo_interno,
+        matricula=asignacion.vehiculo.matricula,
         fecha_asignacion=asignacion.fecha_asignacion,
     )
 
@@ -912,3 +939,35 @@ def asignar_vehiculo_servicio(
             detail=str(e),
         ) from e
     return _asignacion_vehiculo_to_response(asignacion)
+
+
+@servicio_router.get(
+    "",
+    response_model=InventarioServicioResponse,
+    summary="Listar recursos asignados a un servicio (R1, lectura)",
+)
+def listar_inventario_servicio(
+    servicio_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.INVENTARIO_VER)),
+    ],
+):
+    try:
+        material, vehiculos = service.listar_inventario_de_servicio(
+            session, servicio_id=servicio_id
+        )
+    except service.ServicioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Servicio no encontrado: {e}",
+        ) from e
+    return InventarioServicioResponse(
+        material=[
+            _inventario_material_servicio_response(a) for a in material
+        ],
+        vehiculos=[
+            _inventario_vehiculo_servicio_response(a) for a in vehiculos
+        ],
+    )
