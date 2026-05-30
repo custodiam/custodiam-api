@@ -59,6 +59,33 @@ def update_ubicacion(
     return ubicacion
 
 
+def esta_en_uso(session: Session, ubicacion_id: uuid.UUID) -> bool:
+    """¿Algún material o vehículo referencia esta ubicación? (PR2).
+
+    Soporta la protección del borrado: una ubicación en uso no se elimina
+    (el FK es ``ON DELETE RESTRICT``; el service lo traduce a un 409 antes
+    de llegar al constraint). Import local de los modelos del inventario
+    para no acoplar el catálogo a su esquema en tiempo de carga.
+    """
+
+    from app.models.material import Material
+    from app.models.vehiculo import Vehiculo
+
+    en_material = session.exec(
+        select(Material.id)
+        .where(Material.ubicacion_base_id == ubicacion_id)
+        .limit(1)
+    ).first()
+    if en_material is not None:
+        return True
+    en_vehiculo = session.exec(
+        select(Vehiculo.id)
+        .where(Vehiculo.ubicacion_base_id == ubicacion_id)
+        .limit(1)
+    ).first()
+    return en_vehiculo is not None
+
+
 def delete_ubicacion(session: Session, ubicacion: Ubicacion) -> None:
     session.delete(ubicacion)
     session.commit()

@@ -143,4 +143,12 @@ def eliminar_ubicacion(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Ubicación no encontrada: {e}",
         ) from e
+    except service.UbicacionEnUso as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "La ubicación está en uso por algún material o vehículo "
+                f"y no puede eliminarse: {e}"
+            ),
+        ) from e
     return Response(status_code=status.HTTP_204_NO_CONTENT)

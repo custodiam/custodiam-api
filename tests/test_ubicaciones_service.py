@@ -97,6 +97,22 @@ class TestEliminar:
         with pytest.raises(service.UbicacionNoEncontrada):
             service.eliminar_ubicacion(db_session, uuid.uuid4())
 
+    def test_eliminar_en_uso_por_material_levanta_en_uso(
+        self, db_session, make_ubicacion, make_material
+    ):
+        ubi = make_ubicacion(nombre="En uso por material")
+        make_material(ubicacion_base_id=ubi.id)
+        with pytest.raises(service.UbicacionEnUso):
+            service.eliminar_ubicacion(db_session, ubi.id)
+
+    def test_eliminar_en_uso_por_vehiculo_levanta_en_uso(
+        self, db_session, make_ubicacion, make_vehiculo
+    ):
+        ubi = make_ubicacion(nombre="En uso por vehículo")
+        make_vehiculo(ubicacion_base_id=ubi.id)
+        with pytest.raises(service.UbicacionEnUso):
+            service.eliminar_ubicacion(db_session, ubi.id)
+
 
 class TestListar:
     def test_listar_con_q(self, db_session, make_ubicacion):

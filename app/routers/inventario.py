@@ -311,7 +311,13 @@ def crear_material(
         Depends(require_permission(Permission.INVENTARIO_REGISTRAR_MATERIAL)),
     ],
 ):
-    return service.crear_material(session, data)
+    try:
+        return service.crear_material(session, data)
+    except service.UbicacionBaseNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"La ubicación indicada no existe: {e}",
+        ) from e
 
 
 @router.patch(
@@ -334,6 +340,11 @@ def actualizar_material(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Material no encontrado: {e}",
+        ) from e
+    except service.UbicacionBaseNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"La ubicación indicada no existe: {e}",
         ) from e
 
 
@@ -630,7 +641,13 @@ def crear_vehiculo(
         Depends(require_permission(Permission.INVENTARIO_REGISTRAR_VEHICULO)),
     ],
 ):
-    return service.crear_vehiculo(session, data)
+    try:
+        return service.crear_vehiculo(session, data)
+    except service.UbicacionBaseNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"La ubicación indicada no existe: {e}",
+        ) from e
 
 
 @router.patch(
@@ -653,6 +670,11 @@ def actualizar_vehiculo(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vehículo no encontrado: {e}",
+        ) from e
+    except service.UbicacionBaseNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"La ubicación indicada no existe: {e}",
         ) from e
 
 

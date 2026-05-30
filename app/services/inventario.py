@@ -53,6 +53,7 @@ from app.models.servicio import Servicio, TipoServicio
 from app.models.vehiculo import Vehiculo
 from app.repositories import inventario as repo
 from app.repositories import servicios as servicios_repo
+from app.repositories import ubicaciones as ubicaciones_repo
 
 if TYPE_CHECKING:
     from app.schemas.inventario import (
@@ -118,6 +119,10 @@ class EstadoIncidenciaInvalido(InventarioError):  # noqa: N818 — castellano
 
 class MaterialEnEstadoFinal(InventarioError):  # noqa: N818 — castellano
     """El material/vehículo está en PERDIDO y no admite cambios de estado."""
+
+
+class UbicacionBaseNoEncontrada(InventarioError):  # noqa: N818 — castellano
+    """El ``ubicacion_base_id`` del body no existe en el catálogo (PR2)."""
 
 
 class RecursoSolapado(InventarioError):  # noqa: N818 — castellano
@@ -342,10 +347,27 @@ def _generar_codigo_automatico(session: Session) -> str:
             return codigo
 
 
+def _validar_ubicacion_base(
+    session: Session, ubicacion_base_id: uuid.UUID | None
+) -> None:
+    """Verifica que el ``ubicacion_base_id`` del body existe (PR2).
+
+    ``None`` es válido (la ubicación es opcional y se admite desvincular).
+    Un id que no apunta a ninguna fila del catálogo se rechaza antes de
+    llegar al constraint de BD para devolver un 422 limpio.
+    """
+
+    if ubicacion_base_id is None:
+        return
+    if ubicaciones_repo.get_ubicacion(session, ubicacion_base_id) is None:
+        raise UbicacionBaseNoEncontrada(str(ubicacion_base_id))
+
+
 def crear_material(session: Session, data: MaterialCreate) -> Material:
     """CU-20 / US-05-01. Genera código automático si el cliente no lo da."""
 
     payload = data.model_dump(exclude_unset=False)
+    _validar_ubicacion_base(session, payload.get("ubicacion_base_id"))
     if not payload.get("codigo"):
         payload["codigo"] = _generar_codigo_automatico(session)
     payload["estado"] = EstadoInventario.OPERATIVO
@@ -357,6 +379,7 @@ def actualizar_material(
 ) -> Material:
     material = obtener_material(session, material_id)
     patch = data.model_dump(exclude_unset=True)
+    _validar_ubicacion_base(session, patch.get("ubicacion_base_id"))
     return repo.update_material(session, material, patch)
 
 
@@ -364,6 +387,7 @@ def crear_vehiculo(session: Session, data: VehiculoCreate) -> Vehiculo:
     """CU-20 flujo A / US-05-02."""
 
     payload = data.model_dump(exclude_unset=False)
+    _validar_ubicacion_base(session, payload.get("ubicacion_base_id"))
     payload["estado"] = EstadoInventario.OPERATIVO
     return repo.create_vehiculo(session, payload)
 
@@ -373,6 +397,7 @@ def actualizar_vehiculo(
 ) -> Vehiculo:
     vehiculo = obtener_vehiculo(session, vehiculo_id)
     patch = data.model_dump(exclude_unset=True)
+    _validar_ubicacion_base(session, patch.get("ubicacion_base_id"))
     return repo.update_vehiculo(session, vehiculo, patch)
 
 

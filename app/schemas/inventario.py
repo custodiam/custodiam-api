@@ -59,7 +59,9 @@ class MaterialBase(BaseModel):
     tipo: TipoMaterial
     categoria: str | None = Field(default=None, max_length=100)
     cantidad: int = Field(default=1, ge=0)
-    ubicacion_base: str = Field(max_length=255)
+    # Ubicación: texto legacy opcional + FK canónico al catálogo (PR2).
+    ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
     fecha_adquisicion: date | None = None
     fecha_proxima_revision: date | None = None
     foto_url: str | None = Field(default=None, max_length=500)
@@ -88,6 +90,7 @@ class MaterialUpdate(BaseModel):
     categoria: str | None = Field(default=None, max_length=100)
     cantidad: int | None = Field(default=None, ge=0)
     ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
     fecha_adquisicion: date | None = None
     fecha_proxima_revision: date | None = None
     foto_url: str | None = Field(default=None, max_length=500)
@@ -114,7 +117,8 @@ class MaterialSummary(BaseModel):
     categoria: str | None = None
     estado: EstadoInventario
     cantidad: int
-    ubicacion_base: str
+    ubicacion_base: str | None = None
+    ubicacion_base_id: UUID | None = None
 
 
 class MaterialResponse(MaterialBase):
@@ -153,7 +157,9 @@ class VehiculoBase(BaseModel):
     fecha_itv: date | None = None
     foto_url: str | None = Field(default=None, max_length=500)
     observaciones: str | None = None
-    ubicacion_base: str = Field(max_length=255)
+    # Ubicación: texto legacy opcional + FK canónico al catálogo (PR2).
+    ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
 
 
 class VehiculoCreate(VehiculoBase):
@@ -171,6 +177,7 @@ class VehiculoUpdate(BaseModel):
     foto_url: str | None = Field(default=None, max_length=500)
     observaciones: str | None = None
     ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
 
 
 class IncidenciaVehiculoRequest(BaseModel):
@@ -192,7 +199,8 @@ class VehiculoSummary(BaseModel):
     matricula: str
     tipo: TipoVehiculo
     estado: EstadoInventario
-    ubicacion_base: str
+    ubicacion_base: str | None = None
+    ubicacion_base_id: UUID | None = None
 
 
 class VehiculoResponse(VehiculoBase):

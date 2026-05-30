@@ -9,6 +9,7 @@ Excepciones de dominio
 
 - :class:`UbicacionNoEncontrada` → 404
 - :class:`UbicacionYaExiste` → 409 (nombre duplicado)
+- :class:`UbicacionEnUso` → 409 (referenciada por material/vehículo)
 """
 
 from __future__ import annotations
@@ -35,6 +36,10 @@ class UbicacionNoEncontrada(UbicacionError):  # noqa: N818 — castellano
 
 class UbicacionYaExiste(UbicacionError):  # noqa: N818 — castellano
     """Ya existe una ubicación con ese nombre (US-05-12)."""
+
+
+class UbicacionEnUso(UbicacionError):  # noqa: N818 — castellano
+    """La ubicación está referenciada por algún material o vehículo (PR2)."""
 
 
 def listar_ubicaciones(
@@ -80,4 +85,6 @@ def actualizar_ubicacion(
 
 def eliminar_ubicacion(session: Session, ubicacion_id: uuid.UUID) -> None:
     ubicacion = obtener_ubicacion(session, ubicacion_id)
+    if repo.esta_en_uso(session, ubicacion_id):
+        raise UbicacionEnUso(str(ubicacion_id))
     repo.delete_ubicacion(session, ubicacion)
