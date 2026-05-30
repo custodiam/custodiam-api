@@ -102,6 +102,51 @@ class TestListPaginated:
         assert total == 1
         assert items[0].ubicacion == "Zuera"
 
+    def test_filtro_desde_incluye_el_limite_inferior(
+        self, db_session, trio_servicios
+    ):
+        # El trío empieza el 27-may, 1-jun y 1-jul de 2026. `desde` en el
+        # arranque del 1-jun debe conservar los dos servicios de junio y
+        # julio y descartar el de mayo.
+        items, total = repo.list_paginated(
+            db_session, desde=datetime(2026, 6, 1, 0, 0)
+        )
+        assert total == 2
+        assert {s.titulo for s in items} == {"Romería Virgen", "Cabalgata Reyes"}
+
+    def test_filtro_hasta_incluye_el_limite_superior(
+        self, db_session, trio_servicios
+    ):
+        # `hasta` al final del 1-jun conserva mayo y junio, descarta julio.
+        items, total = repo.list_paginated(
+            db_session, hasta=datetime(2026, 6, 1, 23, 59, 59)
+        )
+        assert total == 2
+        assert {s.titulo for s in items} == {
+            "Romería Virgen",
+            "Inundación río Gállego",
+        }
+
+    def test_filtro_rango_acota_por_ambos_extremos(
+        self, db_session, trio_servicios
+    ):
+        items, total = repo.list_paginated(
+            db_session,
+            desde=datetime(2026, 5, 28, 0, 0),
+            hasta=datetime(2026, 6, 30, 23, 59, 59),
+        )
+        assert total == 1
+        assert items[0].titulo == "Romería Virgen"
+
+    def test_filtro_rango_combina_con_estado(self, db_session, trio_servicios):
+        items, total = repo.list_paginated(
+            db_session,
+            estado=EstadoServicio.PUBLICADO,
+            desde=datetime(2026, 6, 15, 0, 0),
+        )
+        assert total == 1
+        assert items[0].titulo == "Cabalgata Reyes"
+
 
 class TestInscritosCount:
     """`inscritos_count` (column_property con COUNT correlacionado).

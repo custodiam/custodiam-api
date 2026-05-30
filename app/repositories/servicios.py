@@ -12,6 +12,7 @@ lanzan HTTPException. Se limitan a leer y escribir filas.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import selectinload
@@ -51,12 +52,17 @@ def list_paginated(
     q: str | None = None,
     estado: EstadoServicio | None = None,
     tipo: TipoServicio | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
 ) -> tuple[list[Servicio], int]:
     """Lista paginada con filtros opcionales.
 
-    `q` busca por `titulo` o `ubicacion` con `ILIKE`. Orden por
-    `fecha_inicio` descendente (próximos primero según US-03-07; los
-    pasados se hunden al final por orden inverso de fecha_inicio).
+    `q` busca por `titulo` o `ubicacion` con `ILIKE`. `desde`/`hasta`
+    acotan por `fecha_inicio` con ambos extremos inclusivos (el Service
+    resuelve la frontera de día: `desde` al arranque y `hasta` al final
+    del día). Orden por `fecha_inicio` descendente (próximos primero
+    según US-03-07; los pasados se hunden al final por orden inverso de
+    fecha_inicio).
     """
 
     filtros = []
@@ -69,6 +75,10 @@ def list_paginated(
         filtros.append(
             or_(Servicio.titulo.ilike(pattern), Servicio.ubicacion.ilike(pattern))
         )
+    if desde is not None:
+        filtros.append(Servicio.fecha_inicio >= desde)
+    if hasta is not None:
+        filtros.append(Servicio.fecha_inicio <= hasta)
 
     # El total cuenta solo PKs filtradas: NO selecciona el `column_property`
     # `inscritos_count`, así que el COUNT correlacionado por fila no se
