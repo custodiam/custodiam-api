@@ -922,6 +922,29 @@ def asignar_vehiculo_a_servicio(
 
 
 # ---------------------------------------------------------------------------
+# Lectura del inventario de un servicio (R1 / Opción 1B)
+# ---------------------------------------------------------------------------
+
+
+def listar_inventario_de_servicio(
+    session: Session,
+    *,
+    servicio_id: uuid.UUID,
+) -> tuple[list[AsignacionMaterial], list[AsignacionVehiculo]]:
+    """Recursos (material + vehículos) asignados a un servicio (R1, lectura).
+
+    Valida que el servicio exista (``ServicioNoEncontrado`` → 404 en el
+    router). Devuelve solo asignaciones activas; el nombre del material y
+    los identificadores del vehículo viajan precargados (anti-N+1).
+    """
+
+    _obtener_servicio(session, servicio_id)
+    material = repo.list_inventario_servicio_material(session, servicio_id)
+    vehiculos = repo.list_inventario_servicio_vehiculo(session, servicio_id)
+    return material, vehiculos
+
+
+# ---------------------------------------------------------------------------
 # Liberación al cerrar servicio (US-05-06 / US-05-07 — gancho para E03)
 # ---------------------------------------------------------------------------
 

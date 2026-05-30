@@ -311,6 +311,50 @@ class AsignacionVehiculoResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Inventario de un servicio (lectura — R1 / Opción 1B)
+# ---------------------------------------------------------------------------
+
+
+class InventarioMaterialServicioResponse(BaseModel):
+    """Material asignado a un servicio (lectura, R1).
+
+    Aplana el nombre del material para evitar un segundo viaje al servidor,
+    siguiendo el mismo patrón curado que :class:`DotacionVehiculoResponse`.
+    """
+
+    id: UUID
+    material_id: UUID
+    material_nombre: str
+    cantidad: int
+    fecha_asignacion: datetime
+
+
+class InventarioVehiculoServicioResponse(BaseModel):
+    """Vehículo asignado a un servicio (lectura, R1).
+
+    Aplana los identificadores del vehículo (código interno y matrícula)
+    para que la ficha del servicio los muestre sin resolverlos aparte.
+    """
+
+    id: UUID
+    vehiculo_id: UUID
+    codigo_interno: str
+    matricula: str
+    fecha_asignacion: datetime
+
+
+class InventarioServicioResponse(BaseModel):
+    """Recursos asignados a un servicio: material + vehículos.
+
+    Respuesta de ``GET /servicios/{id}/inventario`` (R1, lectura). El POST
+    de asignar ya existía; este GET cubre el lado de consulta.
+    """
+
+    material: list[InventarioMaterialServicioResponse]
+    vehiculos: list[InventarioVehiculoServicioResponse]
+
+
+# ---------------------------------------------------------------------------
 # Ocupación / disponibilidad temporal de recursos (PR6 / Política A)
 # ---------------------------------------------------------------------------
 

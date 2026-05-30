@@ -373,6 +373,41 @@ def list_asignaciones_activas_servicio_vehiculo(
     return list(session.exec(stmt).all())
 
 
+def list_inventario_servicio_material(
+    session: Session, servicio_id: uuid.UUID
+) -> list[AsignacionMaterial]:
+    """Material de servicio activo con el material precargado (R1, anti-N+1)."""
+
+    stmt = (
+        select(AsignacionMaterial)
+        .where(
+            AsignacionMaterial.servicio_id == servicio_id,
+            AsignacionMaterial.tipo == TipoAsignacion.SERVICIO,
+            AsignacionMaterial.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionMaterial.material))
+        .order_by(AsignacionMaterial.fecha_asignacion)
+    )
+    return list(session.exec(stmt).all())
+
+
+def list_inventario_servicio_vehiculo(
+    session: Session, servicio_id: uuid.UUID
+) -> list[AsignacionVehiculo]:
+    """Vehículos de servicio activos con el vehículo precargado (R1, anti-N+1)."""
+
+    stmt = (
+        select(AsignacionVehiculo)
+        .where(
+            AsignacionVehiculo.servicio_id == servicio_id,
+            AsignacionVehiculo.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionVehiculo.vehiculo))
+        .order_by(AsignacionVehiculo.fecha_asignacion)
+    )
+    return list(session.exec(stmt).all())
+
+
 def create_asignacion_vehiculo(
     session: Session, data: dict[str, Any]
 ) -> AsignacionVehiculo:
