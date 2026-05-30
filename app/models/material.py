@@ -87,7 +87,14 @@ class Material(SQLModel, table=True):
 
     # Stock
     cantidad: int = Field(default=1, ge=0, nullable=False)
-    ubicacion_base: str = Field(max_length=255)
+    # Ubicación: el texto queda como etiqueta legacy opcional; la
+    # referencia canónica es el FK al catálogo `ubicaciones` (PR2). El
+    # `ON DELETE RESTRICT` se aplica en la migración (no se borra una
+    # ubicación en uso).
+    ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: uuid.UUID | None = Field(
+        default=None, foreign_key="ubicaciones.id", index=True
+    )
 
     # Datos opcionales del CU-20
     fecha_adquisicion: date | None = None

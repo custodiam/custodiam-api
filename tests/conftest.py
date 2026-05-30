@@ -58,6 +58,7 @@ _OPERATIONAL_TABLES = (
     "asignaciones_material",
     "vehiculos",
     "materiales",
+    "ubicaciones",
     "fichajes",
     "inscripciones_servicio",
     "servicios",
@@ -646,3 +647,51 @@ def make_vehiculo(db_session):
 @pytest.fixture
 def vehiculo(make_vehiculo):
     return make_vehiculo()
+
+
+# ---------------------------------------------------------------------------
+# Factories del catálogo de ubicaciones (E10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_ubicacion(db_session):
+    """Crea una Ubicacion con valores por defecto sensatos.
+
+    El nombre es único por defecto (counter) para no chocar con el
+    constraint de unicidad cuando un test crea varias.
+    """
+
+    from app.models.ubicacion import Ubicacion
+
+    counter = {"n": 0}
+
+    def _factory(
+        *,
+        nombre: str | None = None,
+        descripcion: str | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+        **extra,
+    ):
+        counter["n"] += 1
+        if nombre is None:
+            nombre = f"Ubicación de prueba {counter['n']:04d}"
+        ubicacion = Ubicacion(
+            nombre=nombre,
+            descripcion=descripcion,
+            lat=lat,
+            lng=lng,
+            **extra,
+        )
+        db_session.add(ubicacion)
+        db_session.commit()
+        db_session.refresh(ubicacion)
+        return ubicacion
+
+    return _factory
+
+
+@pytest.fixture
+def ubicacion(make_ubicacion):
+    return make_ubicacion()
