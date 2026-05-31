@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import TYPE_CHECKING
 
 from sqlmodel import Session
@@ -150,9 +150,29 @@ def listar(
     q: str | None = None,
     estado: EstadoServicio | None = None,
     tipo: TipoServicio | None = None,
+    desde: date | None = None,
+    hasta: date | None = None,
 ) -> tuple[list[Servicio], int]:
+    """Lista paginada de servicios.
+
+    ``desde``/``hasta`` llegan como fechas de calendario (las elige un
+    date-range picker en el cliente) y se traducen aquí a los límites
+    ``datetime`` del filtro por ``fecha_inicio``: ``desde`` al arranque
+    del día y ``hasta`` al último instante del día, para que el rango
+    sea inclusivo de la jornada completa en ambos extremos.
+    """
+
+    desde_dt = datetime.combine(desde, time.min) if desde is not None else None
+    hasta_dt = datetime.combine(hasta, time.max) if hasta is not None else None
     return repo.list_paginated(
-        session, skip=skip, limit=limit, q=q, estado=estado, tipo=tipo
+        session,
+        skip=skip,
+        limit=limit,
+        q=q,
+        estado=estado,
+        tipo=tipo,
+        desde=desde_dt,
+        hasta=hasta_dt,
     )
 
 

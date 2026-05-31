@@ -14,6 +14,7 @@ hace dentro del handler tras parsear el body.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -109,9 +110,27 @@ def listar_servicios(
     tipo: TipoServicio | None = Query(
         None, description="Filtrar por tipo de servicio"
     ),
+    desde: date | None = Query(
+        None, description="Filtrar servicios cuya fecha de inicio sea ≥ esta fecha"
+    ),
+    hasta: date | None = Query(
+        None, description="Filtrar servicios cuya fecha de inicio sea ≤ esta fecha"
+    ),
 ):
+    if desde is not None and hasta is not None and desde > hasta:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El parámetro 'desde' no puede ser posterior a 'hasta'.",
+        )
     items, total = service.listar(
-        session, skip=skip, limit=limit, q=q, estado=estado, tipo=tipo
+        session,
+        skip=skip,
+        limit=limit,
+        q=q,
+        estado=estado,
+        tipo=tipo,
+        desde=desde,
+        hasta=hasta,
     )
     response.headers["X-Total-Count"] = str(total)
     return items

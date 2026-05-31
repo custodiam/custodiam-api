@@ -82,6 +82,43 @@ class TestListarYObtener:
         assert r.status_code == 200
         assert {s["titulo"] for s in r.json()} == {"A"}
 
+    def test_filtro_por_rango_de_fechas(self, authenticated_client, make_servicio):
+        from datetime import datetime as _dt
+
+        make_servicio(titulo="Mayo", fecha_inicio=_dt(2026, 5, 10, 9, 0))
+        make_servicio(titulo="Junio", fecha_inicio=_dt(2026, 6, 15, 9, 0))
+        make_servicio(titulo="Julio", fecha_inicio=_dt(2026, 7, 20, 9, 0))
+        r = authenticated_client.get(
+            BASE, params={"desde": "2026-06-01", "hasta": "2026-06-30"}
+        )
+        assert r.status_code == 200
+        assert r.headers["X-Total-Count"] == "1"
+        assert {s["titulo"] for s in r.json()} == {"Junio"}
+
+    def test_filtro_hasta_incluye_servicios_del_ultimo_dia(
+        self, authenticated_client, make_servicio
+    ):
+        # Un servicio a las 18:00 del día `hasta` debe entrar (rango
+        # inclusivo del día completo, no recortado a las 00:00).
+        from datetime import datetime as _dt
+
+        make_servicio(titulo="Tarde", fecha_inicio=_dt(2026, 6, 30, 18, 0))
+        r = authenticated_client.get(
+            BASE, params={"desde": "2026-06-01", "hasta": "2026-06-30"}
+        )
+        assert r.status_code == 200
+        assert {s["titulo"] for s in r.json()} == {"Tarde"}
+
+    def test_filtro_desde_posterior_a_hasta_es_422(self, authenticated_client):
+        r = authenticated_client.get(
+            BASE, params={"desde": "2026-07-01", "hasta": "2026-06-01"}
+        )
+        assert r.status_code == 422
+
+    def test_filtro_fecha_mal_formada_es_422(self, authenticated_client):
+        r = authenticated_client.get(BASE, params={"desde": "no-es-fecha"})
+        assert r.status_code == 422
+
     def test_obtener_existente(self, authenticated_client, servicio_borrador):
         r = authenticated_client.get(f"{BASE}/{servicio_borrador.id}")
         assert r.status_code == 200
