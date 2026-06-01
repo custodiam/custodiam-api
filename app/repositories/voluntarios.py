@@ -124,7 +124,8 @@ def list_paginated(
 
     Devuelve la tupla `(items, total)` para que el caller pueda
     construir la respuesta con paginación. `q` busca por nombre,
-    email o DNI con `ILIKE`. `estado` y `rol_id` son filtros exactos.
+    email, DNI o teléfono con `ILIKE`. `estado` y `rol_id` son filtros
+    exactos.
     """
 
     base = select(Voluntario)
@@ -137,6 +138,7 @@ def list_paginated(
                 Voluntario.nombre.ilike(pattern),
                 Voluntario.email.ilike(pattern),
                 Voluntario.dni.ilike(pattern),
+                Voluntario.telefono.ilike(pattern),
             )
         )
     if rol_id is not None:
