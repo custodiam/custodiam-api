@@ -4,15 +4,16 @@ Estrategia de testing (cerrada en `docs/trabajo/conceptual/09_CALIDAD`):
 
 - **Base de datos:** PostgreSQL real, separada de la de producción.
   La URL se toma de `TEST_DATABASE_URL` (default `postgresql+psycopg://
-  custodiam:test@localhost:5433/custodiam_test`). El docker-compose de
-  `custodiam-infra` no la levanta: el operador la arranca aparte vía
-  ``docker run --rm -d --name custodiam-db-test -p 5433:5432
-  -e POSTGRES_USER=custodiam -e POSTGRES_PASSWORD=test
-  -e POSTGRES_DB=custodiam_test postgres:16-alpine``.
-- **Schema:** se recrea una vez al inicio de la sesión con
-  ``SQLModel.metadata.create_all``. Los catálogos extensibles
-  (`tipos_acreditacion`, `tipos_equipamiento`, `roles`) se siembran con
-  un set mínimo y se mantienen toda la sesión.
+  custodiam:test@localhost:5433/custodiam_test`). La instancia la levanta
+  el flavor de test del compose de `custodiam-infra` (`just test-up`):
+  servicio `db-test` efímero (tmpfs, `postgres:15-alpine`), aislado de la
+  BD de desarrollo.
+- **Schema:** se recrea al inicio de la sesión aplicando las MIGRACIONES de
+  Alembic (`upgrade head`) sobre un schema limpio (`DROP SCHEMA public`), no
+  `create_all`. Así la suite valida el schema REAL de producción (detecta
+  drift modelos↔migraciones) y los catálogos (`tipos_acreditacion`,
+  `tipos_equipamiento`, `roles`) los siembran las propias migraciones de
+  datos, sin duplicar el seed a mano.
 - **Aislamiento entre tests:** TRUNCATE de las tablas operativas tras
   cada test. Los catálogos sobreviven.
 
@@ -22,22 +23,20 @@ Las fixtures de cliente HTTP (`client`, `authenticated_client`,
 """
 
 import os
-import uuid
 from collections.abc import Generator
 from datetime import date
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
-from sqlmodel import Session, SQLModel
+from sqlmodel import Session
 
 import app.models  # noqa: F401 -- registra modelos en SQLModel.metadata
 from app.core.database import get_session
 from app.core.security import get_current_user
 from app.main import app
-from app.models.rol import Rol
-from app.models.tipo_acreditacion import CategoriaAcreditacion, TipoAcreditacion
-from app.models.tipo_equipamiento import TipoEquipamiento
 from app.schemas.auth import CurrentUser
 from app.services.keycloak_admin import KeycloakAdminClient, get_keycloak_admin
 
@@ -58,6 +57,7 @@ _OPERATIONAL_TABLES = (
     "asignaciones_material",
     "vehiculos",
     "materiales",
+    "ubicaciones",
     "fichajes",
     "inscripciones_servicio",
     "servicios",
@@ -74,84 +74,43 @@ _OPERATIONAL_TABLES = (
 def test_engine():
     """Engine compartido para toda la sesión de tests.
 
-    Crea el schema completo desde `SQLModel.metadata` y siembra los
-    catálogos mínimos. No ejecuta migraciones de Alembic: la cobertura
-    de migraciones se delega al smoke test de EN-08-38 (Sprint 5).
+    Resetea el schema y aplica las MIGRACIONES de Alembic (`upgrade head`),
+    no `create_all`: así la suite valida el schema real de producción (un
+    drift entre los modelos y las migraciones se manifiesta aquí) y los
+    catálogos los siembran las propias migraciones de datos (`f76feacaf399`
+    roles, `08460f65687b` tipos), sin duplicar el seed a mano.
     """
 
     engine = create_engine(TEST_DATABASE_URL, echo=False)
 
-    SQLModel.metadata.drop_all(engine)
-    SQLModel.metadata.create_all(engine)
+    # Reset total del schema (incluida la tabla `alembic_version`) para que
+    # las migraciones partan de cero en cada sesión sobre el db-test efímero
+    # del compose.
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+        conn.commit()
 
-    with Session(engine) as session:
-        _seed_catalogos(session)
-        session.commit()
+    _apply_migrations()
 
     yield engine
 
     engine.dispose()
 
 
-def _seed_catalogos(session: Session) -> None:
-    """Siembra el set mínimo de catálogos que usan los tests.
+def _apply_migrations() -> None:
+    """Aplica `alembic upgrade head` sobre `TEST_DATABASE_URL`.
 
-    Refleja una porción representativa del seed real de la migración
-    `08460f65687b`. No es exhaustivo: solo lo que los tests necesitan
-    para crear instancias de Acreditacion, TallaVoluntario y VoluntarioRol.
+    `alembic/env.py` sobreescribe `sqlalchemy.url` con `DATABASE_URL` del
+    entorno si está presente, así que se apunta ahí; `alembic.ini` se
+    resuelve relativo al cwd (la raíz de `custodiam-api`, desde donde pytest
+    se invoca).
     """
 
-    session.add_all([
-        TipoAcreditacion(
-            id=uuid.uuid4(),
-            codigo="carnet_b",
-            nombre="Carnet de conducir B",
-            categoria=CategoriaAcreditacion.LICENCIA_OFICIAL,
-            activo=True,
-        ),
-        TipoAcreditacion(
-            id=uuid.uuid4(),
-            codigo="primeros_auxilios",
-            nombre="Primeros auxilios",
-            categoria=CategoriaAcreditacion.FORMACION_INTERNA,
-            activo=True,
-        ),
-    ])
-
-    session.add_all([
-        TipoEquipamiento(
-            id=uuid.uuid4(),
-            codigo="camisa",
-            nombre="Camisa de servicio",
-            sistema_tallas="XS-XXXL",
-            activo=True,
-        ),
-        TipoEquipamiento(
-            id=uuid.uuid4(),
-            codigo="botas",
-            nombre="Botas operativas",
-            sistema_tallas="36-50",
-            activo=True,
-        ),
-    ])
-
-    # Espejo exacto del seed de la migración Alembic `f76feacaf399`
-    # (EN-02-05 hotfix). Mantener los 12 alineados aquí evita que los
-    # tests pasen con un universo de roles distinto al productivo.
-    session.add_all([
-        Rol(id=uuid.uuid4(), nombre="voluntario_practicas", nivel=1),
-        Rol(id=uuid.uuid4(), nombre="voluntario", nivel=2),
-        Rol(id=uuid.uuid4(), nombre="jefe_equipo", nivel=3),
-        Rol(id=uuid.uuid4(), nombre="jefe_grupo", nivel=3),
-        Rol(id=uuid.uuid4(), nombre="jefe_seccion", nivel=4),
-        Rol(id=uuid.uuid4(), nombre="jefe_unidad", nivel=5),
-        Rol(id=uuid.uuid4(), nombre="subjefe_agrupacion", nivel=6),
-        Rol(id=uuid.uuid4(), nombre="secretario", nivel=7),
-        Rol(id=uuid.uuid4(), nombre="tesorero", nivel=7),
-        Rol(id=uuid.uuid4(), nombre="jefe_agrupacion", nivel=8),
-        Rol(id=uuid.uuid4(), nombre="coordinador", nivel=9),
-        Rol(id=uuid.uuid4(), nombre="admin", nivel=10),
-    ])
+    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
+    command.upgrade(cfg, "head")
 
 
 @pytest.fixture
@@ -503,6 +462,40 @@ def make_servicio(db_session):
 
 
 @pytest.fixture
+def make_inscripcion(db_session):
+    """Inserta una fila `InscripcionServicio` para un par (servicio, voluntario).
+
+    Es la fuente de filas que alimenta `inscritos_count`. No reutiliza el
+    repository para mantener la factoría independiente de la lógica de
+    upsert (un test de conteo no debe depender de la promoción de tipos).
+    """
+
+    from datetime import datetime as _dt
+
+    from app.models.inscripcion_servicio import InscripcionServicio, TipoInscripcion
+
+    def _factory(
+        *,
+        servicio_id,
+        voluntario_id,
+        tipo: TipoInscripcion = TipoInscripcion.INSCRITO,
+        fecha: _dt = _dt(2026, 6, 1, 10, 0),
+    ):
+        inscripcion = InscripcionServicio(
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            tipo=tipo,
+            fecha=fecha,
+        )
+        db_session.add(inscripcion)
+        db_session.commit()
+        db_session.refresh(inscripcion)
+        return inscripcion
+
+    return _factory
+
+
+@pytest.fixture
 def servicio_borrador(make_servicio):
     """Servicio en estado BORRADOR, listo para publicar / convocar."""
 
@@ -612,3 +605,51 @@ def make_vehiculo(db_session):
 @pytest.fixture
 def vehiculo(make_vehiculo):
     return make_vehiculo()
+
+
+# ---------------------------------------------------------------------------
+# Factories del catálogo de ubicaciones (E10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_ubicacion(db_session):
+    """Crea una Ubicacion con valores por defecto sensatos.
+
+    El nombre es único por defecto (counter) para no chocar con el
+    constraint de unicidad cuando un test crea varias.
+    """
+
+    from app.models.ubicacion import Ubicacion
+
+    counter = {"n": 0}
+
+    def _factory(
+        *,
+        nombre: str | None = None,
+        descripcion: str | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+        **extra,
+    ):
+        counter["n"] += 1
+        if nombre is None:
+            nombre = f"Ubicación de prueba {counter['n']:04d}"
+        ubicacion = Ubicacion(
+            nombre=nombre,
+            descripcion=descripcion,
+            lat=lat,
+            lng=lng,
+            **extra,
+        )
+        db_session.add(ubicacion)
+        db_session.commit()
+        db_session.refresh(ubicacion)
+        return ubicacion
+
+    return _factory
+
+
+@pytest.fixture
+def ubicacion(make_ubicacion):
+    return make_ubicacion()

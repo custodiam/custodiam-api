@@ -15,6 +15,36 @@ from app.models.material import EstadoInventario, TipoMaterial
 from app.models.vehiculo import TipoVehiculo
 
 # ---------------------------------------------------------------------------
+# Trazabilidad del estado actual (PR1) — sólo en responses de DETALLE
+# ---------------------------------------------------------------------------
+
+
+class AsignacionActualResponse(BaseModel):
+    """Vista curada de "dónde está / a quién está asignado" un activo (PR1).
+
+    Esquema unificado para las dos lecturas de trazabilidad:
+
+    - **Material** (puede tener varias activas a la vez): cada entrada
+      lleva su ``tipo`` (PERSONAL / PRESTAMO / SERVICIO / DOTACION_VEHICULO),
+      el target correspondiente (uno de ``voluntario_id`` / ``servicio_id``
+      / ``vehiculo_id``), la ``cantidad`` y la ``fecha_asignacion``.
+    - **Vehículo** (unidad única, asignación singular): ``tipo`` es siempre
+      ``"servicio"``, ``servicio_id`` está set, ``cantidad`` es 1 y se
+      adjunta ``servicio_titulo`` (barato vía join, evita un segundo viaje).
+
+    Decisión MVP (PO): no se expone ``fecha_devolucion_prevista``.
+    """
+
+    tipo: str
+    voluntario_id: UUID | None = None
+    servicio_id: UUID | None = None
+    vehiculo_id: UUID | None = None
+    servicio_titulo: str | None = None
+    cantidad: int = 1
+    fecha_asignacion: datetime
+
+
+# ---------------------------------------------------------------------------
 # Material
 # ---------------------------------------------------------------------------
 
@@ -29,7 +59,9 @@ class MaterialBase(BaseModel):
     tipo: TipoMaterial
     categoria: str | None = Field(default=None, max_length=100)
     cantidad: int = Field(default=1, ge=0)
-    ubicacion_base: str = Field(max_length=255)
+    # Ubicación: texto legacy opcional + FK canónico al catálogo (PR2).
+    ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
     fecha_adquisicion: date | None = None
     fecha_proxima_revision: date | None = None
     foto_url: str | None = Field(default=None, max_length=500)
@@ -58,6 +90,7 @@ class MaterialUpdate(BaseModel):
     categoria: str | None = Field(default=None, max_length=100)
     cantidad: int | None = Field(default=None, ge=0)
     ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
     fecha_adquisicion: date | None = None
     fecha_proxima_revision: date | None = None
     foto_url: str | None = Field(default=None, max_length=500)
@@ -84,11 +117,17 @@ class MaterialSummary(BaseModel):
     categoria: str | None = None
     estado: EstadoInventario
     cantidad: int
-    ubicacion_base: str
+    ubicacion_base: str | None = None
+    ubicacion_base_id: UUID | None = None
 
 
 class MaterialResponse(MaterialBase):
-    """Schema de respuesta completo."""
+    """Schema de respuesta completo (DETALLE).
+
+    Incluye la trazabilidad de PR1 (``asignaciones_activas`` +
+    ``unidades_asignadas``). Estos campos NO viven en
+    :class:`MaterialSummary` para no disparar N+1 en el listado.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -97,6 +136,10 @@ class MaterialResponse(MaterialBase):
     observaciones_incidencia: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    asignaciones_activas: list[AsignacionActualResponse] = Field(
+        default_factory=list
+    )
+    unidades_asignadas: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +157,9 @@ class VehiculoBase(BaseModel):
     fecha_itv: date | None = None
     foto_url: str | None = Field(default=None, max_length=500)
     observaciones: str | None = None
-    ubicacion_base: str = Field(max_length=255)
+    # Ubicación: texto legacy opcional + FK canónico al catálogo (PR2).
+    ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
 
 
 class VehiculoCreate(VehiculoBase):
@@ -132,6 +177,7 @@ class VehiculoUpdate(BaseModel):
     foto_url: str | None = Field(default=None, max_length=500)
     observaciones: str | None = None
     ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: UUID | None = None
 
 
 class IncidenciaVehiculoRequest(BaseModel):
@@ -153,11 +199,17 @@ class VehiculoSummary(BaseModel):
     matricula: str
     tipo: TipoVehiculo
     estado: EstadoInventario
-    ubicacion_base: str
+    ubicacion_base: str | None = None
+    ubicacion_base_id: UUID | None = None
 
 
 class VehiculoResponse(VehiculoBase):
-    """Schema de respuesta completo."""
+    """Schema de respuesta completo (DETALLE).
+
+    Incluye ``asignacion_actual`` (PR1): la asignación a servicio activa
+    del vehículo o ``None``. No vive en :class:`VehiculoSummary` para no
+    disparar N+1 en el listado.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -166,6 +218,7 @@ class VehiculoResponse(VehiculoBase):
     observaciones_incidencia: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    asignacion_actual: AsignacionActualResponse | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +278,32 @@ class AsignacionMaterialResponse(BaseModel):
     activa: bool
 
 
+class AsignarDotacionVehiculoRequest(BaseModel):
+    """Body de `POST /inventario/vehiculos/{id}/dotacion` (PR3).
+
+    Asigna material PRESTABLE como dotación fija de un vehículo. El
+    ``vehiculo_id`` viaja en la ruta, no en el body.
+    """
+
+    material_id: UUID
+    cantidad: int = Field(default=1, ge=1)
+
+
+class DotacionVehiculoResponse(BaseModel):
+    """Vista curada de una dotación fija de vehículo (PR3).
+
+    No expone el ``AsignacionMaterial`` crudo (con los tres targets
+    mezclados): sólo los campos relevantes para el cliente, aplanando el
+    nombre del material para evitar un segundo viaje al servidor.
+    """
+
+    id: UUID
+    material_id: UUID
+    material_nombre: str
+    cantidad: int
+    fecha_asignacion: datetime
+
+
 class AsignacionVehiculoResponse(BaseModel):
     """Schema de respuesta de una asignación de vehículo."""
 
@@ -237,3 +316,82 @@ class AsignacionVehiculoResponse(BaseModel):
     fecha_devolucion: datetime | None = None
     observaciones: str | None = None
     activa: bool
+
+
+# ---------------------------------------------------------------------------
+# Inventario de un servicio (lectura — R1 / Opción 1B)
+# ---------------------------------------------------------------------------
+
+
+class InventarioMaterialServicioResponse(BaseModel):
+    """Material asignado a un servicio (lectura, R1).
+
+    Aplana el nombre del material para evitar un segundo viaje al servidor,
+    siguiendo el mismo patrón curado que :class:`DotacionVehiculoResponse`.
+    """
+
+    id: UUID
+    material_id: UUID
+    material_nombre: str
+    cantidad: int
+    fecha_asignacion: datetime
+
+
+class InventarioVehiculoServicioResponse(BaseModel):
+    """Vehículo asignado a un servicio (lectura, R1).
+
+    Aplana los identificadores del vehículo (código interno y matrícula)
+    para que la ficha del servicio los muestre sin resolverlos aparte.
+    """
+
+    id: UUID
+    vehiculo_id: UUID
+    codigo_interno: str
+    matricula: str
+    fecha_asignacion: datetime
+
+
+class InventarioServicioResponse(BaseModel):
+    """Recursos asignados a un servicio: material + vehículos.
+
+    Respuesta de ``GET /servicios/{id}/inventario`` (R1, lectura). El POST
+    de asignar ya existía; este GET cubre el lado de consulta.
+    """
+
+    material: list[InventarioMaterialServicioResponse]
+    vehiculos: list[InventarioVehiculoServicioResponse]
+
+
+# ---------------------------------------------------------------------------
+# Ocupación / disponibilidad temporal de recursos (PR6 / Política A)
+# ---------------------------------------------------------------------------
+
+
+class ConflictoOcupacion(BaseModel):
+    """Un servicio que reserva el recurso y solapa el intervalo consultado.
+
+    El nombre ``ocupacion`` evita la colisión semántica con la
+    "disponibilidad" del voluntario (calendario mensual, módulo E02): aquí
+    se trata de la ocupación temporal de un activo de inventario por
+    servicios concretos.
+    """
+
+    servicio_id: UUID
+    fecha_inicio: datetime
+    fecha_fin: datetime | None = None
+
+
+class OcupacionRecursoResponse(BaseModel):
+    """Respuesta de ``GET .../ocupacion?desde=&hasta=`` (PR6).
+
+    - ``disponible``: ``True`` si el recurso puede comprometerse en el
+      intervalo ``[desde, hasta)`` sin colisión (vehículo: sin solape;
+      material: con stock suficiente tras descontar lo reservado por
+      servicios solapados).
+    - ``conflictos``: servicios que reservan el recurso y solapan el
+      intervalo. En material puede haber conflictos y seguir ``disponible``
+      si el stock alcanza.
+    """
+
+    disponible: bool
+    conflictos: list[ConflictoOcupacion] = Field(default_factory=list)

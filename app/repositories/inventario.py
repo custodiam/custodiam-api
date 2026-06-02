@@ -6,12 +6,19 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, func, or_, select
 
 from app.models.asignacion_material import AsignacionMaterial, TipoAsignacion
 from app.models.asignacion_vehiculo import AsignacionVehiculo
 from app.models.material import EstadoInventario, Material, TipoMaterial
+from app.models.servicio import EstadoServicio, Servicio
 from app.models.vehiculo import TipoVehiculo, Vehiculo
+
+# Estados de servicio que **reservan** un recurso en su intervalo (PR6).
+# Un borrador no reserva: sólo cuentan publicado/activo. Cerrado tampoco
+# (su intervalo ya pasó y la asignación se libera al cerrar).
+_ESTADOS_QUE_RESERVAN = (EstadoServicio.PUBLICADO, EstadoServicio.ACTIVO)
 
 # ---------------------------------------------------------------------------
 # Material
@@ -254,6 +261,41 @@ def cerrar_asignacion_material(
     return asignacion
 
 
+def list_dotacion_activa_vehiculo(
+    session: Session, vehiculo_id: uuid.UUID
+) -> list[AsignacionMaterial]:
+    """Dotación fija activa de un vehículo (PR3).
+
+    Usa ``selectinload`` sobre ``material`` para evitar el N+1 al
+    construir la respuesta con el nombre del material.
+    """
+
+    stmt = (
+        select(AsignacionMaterial)
+        .where(
+            AsignacionMaterial.vehiculo_id == vehiculo_id,
+            AsignacionMaterial.tipo == TipoAsignacion.DOTACION_VEHICULO,
+            AsignacionMaterial.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionMaterial.material))
+        .order_by(AsignacionMaterial.fecha_asignacion)
+    )
+    return list(session.exec(stmt).all())
+
+
+def get_dotacion_activa(
+    session: Session, asignacion_id: uuid.UUID
+) -> AsignacionMaterial | None:
+    """Recupera una dotación fija activa por id (PR3)."""
+
+    stmt = select(AsignacionMaterial).where(
+        AsignacionMaterial.id == asignacion_id,
+        AsignacionMaterial.tipo == TipoAsignacion.DOTACION_VEHICULO,
+        AsignacionMaterial.fecha_devolucion.is_(None),
+    )
+    return session.exec(stmt).first()
+
+
 def count_unidades_asignadas_material(
     session: Session,
     material_id: uuid.UUID,
@@ -299,12 +341,69 @@ def get_asignacion_activa_vehiculo(
     return session.exec(stmt).first()
 
 
+def get_asignacion_activa_vehiculo_con_servicio(
+    session: Session, vehiculo_id: uuid.UUID
+) -> AsignacionVehiculo | None:
+    """Asignación activa del vehículo con el ``servicio`` precargado (PR1).
+
+    Variante de :func:`get_asignacion_activa_vehiculo` que hace
+    ``selectinload`` del servicio para que la ficha de detalle pueda
+    aplanar el ``titulo`` sin un segundo viaje a BD. No se usa en el
+    listado (anti-N+1): el Summary no expone la asignación.
+    """
+
+    stmt = (
+        select(AsignacionVehiculo)
+        .where(
+            AsignacionVehiculo.vehiculo_id == vehiculo_id,
+            AsignacionVehiculo.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionVehiculo.servicio))
+    )
+    return session.exec(stmt).first()
+
+
 def list_asignaciones_activas_servicio_vehiculo(
     session: Session, servicio_id: uuid.UUID
 ) -> list[AsignacionVehiculo]:
     stmt = select(AsignacionVehiculo).where(
         AsignacionVehiculo.servicio_id == servicio_id,
         AsignacionVehiculo.fecha_devolucion.is_(None),
+    )
+    return list(session.exec(stmt).all())
+
+
+def list_inventario_servicio_material(
+    session: Session, servicio_id: uuid.UUID
+) -> list[AsignacionMaterial]:
+    """Material de servicio activo con el material precargado (R1, anti-N+1)."""
+
+    stmt = (
+        select(AsignacionMaterial)
+        .where(
+            AsignacionMaterial.servicio_id == servicio_id,
+            AsignacionMaterial.tipo == TipoAsignacion.SERVICIO,
+            AsignacionMaterial.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionMaterial.material))
+        .order_by(AsignacionMaterial.fecha_asignacion)
+    )
+    return list(session.exec(stmt).all())
+
+
+def list_inventario_servicio_vehiculo(
+    session: Session, servicio_id: uuid.UUID
+) -> list[AsignacionVehiculo]:
+    """Vehículos de servicio activos con el vehículo precargado (R1, anti-N+1)."""
+
+    stmt = (
+        select(AsignacionVehiculo)
+        .where(
+            AsignacionVehiculo.servicio_id == servicio_id,
+            AsignacionVehiculo.fecha_devolucion.is_(None),
+        )
+        .options(selectinload(AsignacionVehiculo.vehiculo))
+        .order_by(AsignacionVehiculo.fecha_asignacion)
     )
     return list(session.exec(stmt).all())
 
@@ -333,3 +432,96 @@ def cerrar_asignacion_vehiculo(
     session.commit()
     session.refresh(asignacion)
     return asignacion
+
+
+# ---------------------------------------------------------------------------
+# Detección de solape temporal de recursos (PR6 / Política A)
+# ---------------------------------------------------------------------------
+#
+# Dos intervalos `[inicio, fin)` solapan sii ``inicio_A < fin_B AND
+# inicio_B < fin_A`` (regla semiabierta: si ``fin_A == inicio_B`` están
+# encadenados y NO solapan). Sólo cuentan los servicios que reservan
+# (PUBLICADO / ACTIVO) y con ``fecha_fin`` no NULL (un servicio de fin
+# abierto no reserva, se gestiona a mano). La dotación fija
+# (DOTACION_VEHICULO, sin ``servicio_id``) nunca participa: el join a
+# ``servicios`` la descarta por sí solo.
+
+
+def find_servicios_solapados_vehiculo(
+    session: Session,
+    *,
+    vehiculo_id: uuid.UUID,
+    inicio: datetime,
+    fin: datetime,
+    excluir_servicio_id: uuid.UUID | None = None,
+) -> list[Servicio]:
+    """Servicios que reservan el vehículo y solapan ``[inicio, fin)`` (PR6).
+
+    Si el intervalo nuevo es de fin abierto (``fin`` NULL) el solape no se
+    evalúa — esa decisión vive en el service. Aquí ``fin`` siempre llega
+    informado. Devuelve los :class:`Servicio` en conflicto (no las
+    asignaciones) para poder construir la respuesta de ocupación.
+    """
+
+    stmt = (
+        select(Servicio)
+        .join(
+            AsignacionVehiculo,
+            AsignacionVehiculo.servicio_id == Servicio.id,
+        )
+        .where(
+            AsignacionVehiculo.vehiculo_id == vehiculo_id,
+            AsignacionVehiculo.fecha_devolucion.is_(None),
+            Servicio.estado.in_(_ESTADOS_QUE_RESERVAN),
+            Servicio.fecha_fin.is_not(None),
+            Servicio.fecha_inicio < fin,
+            inicio < Servicio.fecha_fin,
+        )
+    )
+    if excluir_servicio_id is not None:
+        stmt = stmt.where(Servicio.id != excluir_servicio_id)
+    return list(session.exec(stmt).all())
+
+
+def find_solapes_material(
+    session: Session,
+    *,
+    material_id: uuid.UUID,
+    inicio: datetime,
+    fin: datetime,
+    excluir_servicio_id: uuid.UUID | None = None,
+) -> list[tuple[Servicio, int]]:
+    """Servicios que reservan el material y solapan ``[inicio, fin)`` (PR6).
+
+    A diferencia del vehículo (unidad única), el material es stock: cada
+    servicio en conflicto reserva una ``cantidad``. Devuelve la lista de
+    ``(servicio, cantidad_reservada_en_ese_servicio)`` para que el service
+    decida si la suma de unidades comprometidas deja stock suficiente en el
+    intervalo solicitado.
+    """
+
+    stmt = (
+        select(
+            Servicio,
+            func.coalesce(func.sum(AsignacionMaterial.cantidad), 0).label(
+                "reservada"
+            ),
+        )
+        .join(
+            AsignacionMaterial,
+            AsignacionMaterial.servicio_id == Servicio.id,
+        )
+        .where(
+            AsignacionMaterial.material_id == material_id,
+            AsignacionMaterial.tipo == TipoAsignacion.SERVICIO,
+            AsignacionMaterial.fecha_devolucion.is_(None),
+            Servicio.estado.in_(_ESTADOS_QUE_RESERVAN),
+            Servicio.fecha_fin.is_not(None),
+            Servicio.fecha_inicio < fin,
+            inicio < Servicio.fecha_fin,
+        )
+        .group_by(Servicio.id)
+    )
+    if excluir_servicio_id is not None:
+        stmt = stmt.where(Servicio.id != excluir_servicio_id)
+    return [(row[0], int(row[1])) for row in session.exec(stmt).all()]

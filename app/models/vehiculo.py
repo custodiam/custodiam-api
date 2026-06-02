@@ -75,7 +75,13 @@ class Vehiculo(SQLModel, table=True):
             default=EstadoInventario.OPERATIVO,
         ),
     )
-    ubicacion_base: str = Field(max_length=255)
+    # Ubicación: el texto queda como etiqueta legacy opcional; la
+    # referencia canónica es el FK al catálogo `ubicaciones` (PR2). El
+    # `ON DELETE RESTRICT` se aplica en la migración.
+    ubicacion_base: str | None = Field(default=None, max_length=255)
+    ubicacion_base_id: uuid.UUID | None = Field(
+        default=None, foreign_key="ubicaciones.id", index=True
+    )
     observaciones_incidencia: str | None = None
 
     # Timestamps

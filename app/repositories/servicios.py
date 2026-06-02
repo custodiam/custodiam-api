@@ -12,6 +12,7 @@ lanzan HTTPException. Se limitan a leer y escribir filas.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import selectinload
@@ -51,29 +52,48 @@ def list_paginated(
     q: str | None = None,
     estado: EstadoServicio | None = None,
     tipo: TipoServicio | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
 ) -> tuple[list[Servicio], int]:
     """Lista paginada con filtros opcionales.
 
-    `q` busca por `titulo` o `ubicacion` con `ILIKE`. Orden por
-    `fecha_inicio` descendente (próximos primero según US-03-07; los
-    pasados se hunden al final por orden inverso de fecha_inicio).
+    `q` busca por `titulo` o `ubicacion` con `ILIKE`. `desde`/`hasta`
+    acotan por `fecha_inicio` con ambos extremos inclusivos (el Service
+    resuelve la frontera de día: `desde` al arranque y `hasta` al final
+    del día). Orden por `fecha_inicio` descendente (próximos primero
+    según US-03-07; los pasados se hunden al final por orden inverso de
+    fecha_inicio).
     """
 
-    base = select(Servicio)
+    filtros = []
     if estado is not None:
-        base = base.where(Servicio.estado == estado)
+        filtros.append(Servicio.estado == estado)
     if tipo is not None:
-        base = base.where(Servicio.tipo == tipo)
+        filtros.append(Servicio.tipo == tipo)
     if q:
         pattern = f"%{q}%"
-        base = base.where(
+        filtros.append(
             or_(Servicio.titulo.ilike(pattern), Servicio.ubicacion.ilike(pattern))
         )
+    if desde is not None:
+        filtros.append(Servicio.fecha_inicio >= desde)
+    if hasta is not None:
+        filtros.append(Servicio.fecha_inicio <= hasta)
 
-    total_stmt = select(func.count()).select_from(base.subquery())
+    # El total cuenta solo PKs filtradas: NO selecciona el `column_property`
+    # `inscritos_count`, así que el COUNT correlacionado por fila no se
+    # ejecuta en el camino del total (evita el N+1 oculto dentro del COUNT).
+    total_stmt = select(func.count(Servicio.id))
+    for f in filtros:
+        total_stmt = total_stmt.where(f)
     total = session.exec(total_stmt).one()
 
-    items_stmt = base.order_by(Servicio.fecha_inicio.desc()).offset(skip).limit(limit)
+    items_stmt = select(Servicio)
+    for f in filtros:
+        items_stmt = items_stmt.where(f)
+    items_stmt = items_stmt.order_by(Servicio.fecha_inicio.desc()).offset(skip).limit(
+        limit
+    )
     items = list(session.exec(items_stmt).all())
     return items, int(total)
 

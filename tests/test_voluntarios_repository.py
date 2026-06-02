@@ -141,6 +141,15 @@ class TestListPaginated:
         assert total == 1
         assert items[0].nombre == "Carlos Pérez"
 
+    def test_filtro_q_busca_tambien_por_telefono(self, db_session, make_voluntario):
+        # El teléfono es un identificador habitual en campo; q debe alcanzarlo.
+        make_voluntario(nombre="Ana García", telefono="600111222")
+        make_voluntario(nombre="Otro Voluntario", telefono="699888777")
+
+        items, total = repo.list_paginated(db_session, q="600111")
+        assert total == 1
+        assert items[0].nombre == "Ana García"
+
     def test_filtro_q_sin_resultados(self, db_session, trio_voluntarios):
         items, total = repo.list_paginated(db_session, q="Zzz no existe")
         assert items == []

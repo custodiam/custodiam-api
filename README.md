@@ -40,6 +40,14 @@ Abre <http://localhost:8000/docs> para la documentación Swagger UI interactiva.
 
 ## Comandos esenciales
 
+> **Prerrequisito de los tests:** la suite necesita el servicio `db-test` efímero
+> del compose de `custodiam-infra`, levantado con `just test-up` (equivalente:
+> `docker compose -f docker/docker-compose.yml -f docker/docker-compose.test.yml --profile test up -d --wait db-test`
+> desde `custodiam-infra`). El `conftest` aplica `alembic upgrade head` sobre un
+> schema limpio (`DROP SCHEMA`) y siembra los catálogos vía las migraciones de
+> datos —valida el schema REAL de producción, no `create_all`—; apunta a
+> `postgresql+psycopg://custodiam:test@localhost:5433/custodiam_test`.
+
 ```bash
 # Tests + cobertura
 uv run pytest tests/ -v

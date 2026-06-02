@@ -31,11 +31,15 @@ BASE = "/api/v1/inventario"
         ("patch", f"{BASE}/vehiculos/{uuid.uuid4()}"),
         ("post", f"{BASE}/vehiculos/{uuid.uuid4()}/incidencia"),
         ("post", f"{BASE}/vehiculos/{uuid.uuid4()}/reparar"),
+        ("get", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion"),
+        ("post", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion"),
+        ("delete", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion/{uuid.uuid4()}"),
+        ("get", f"/api/v1/servicios/{uuid.uuid4()}/inventario"),
     ],
 )
 def test_endpoints_sin_token_devuelven_401(client, method, path):
     request = getattr(client, method)
-    response = request(path) if method == "get" else request(path, json={})
+    response = request(path) if method in ("get", "delete") else request(path, json={})
     assert response.status_code == 401
 
 
@@ -478,6 +482,60 @@ class TestAsignarServicio:
 
 
 # ---------------------------------------------------------------------------
+# Listar recursos asignados a un servicio (R1 / Opción 1B — GET de lectura)
+# ---------------------------------------------------------------------------
+
+
+class TestListarInventarioServicio:
+    def _path(self, servicio_id):
+        return f"/api/v1/servicios/{servicio_id}/inventario"
+
+    def test_servicio_sin_recursos_devuelve_listas_vacias(
+        self, jefe_client, servicio_publicado
+    ):
+        r = jefe_client.get(self._path(servicio_publicado.id))
+        assert r.status_code == 200
+        assert r.json() == {"material": [], "vehiculos": []}
+
+    def test_lista_material_y_vehiculo_asignados(
+        self, client_for_role, servicio_publicado, make_material, vehiculo
+    ):
+        from app.models.material import TipoMaterial
+
+        c = client_for_role(["jefe_equipo"])
+        m = make_material(nombre="Conos", tipo=TipoMaterial.SERVICIO, cantidad=10)
+        c.post(
+            f"{self._path(servicio_publicado.id)}/material",
+            json={"material_id": str(m.id), "cantidad": 4},
+        )
+        c.post(
+            f"{self._path(servicio_publicado.id)}/vehiculo",
+            json={"vehiculo_id": str(vehiculo.id)},
+        )
+
+        r = c.get(self._path(servicio_publicado.id))
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["material"]) == 1
+        assert body["material"][0]["material_nombre"] == "Conos"
+        assert body["material"][0]["cantidad"] == 4
+        assert body["material"][0]["material_id"] == str(m.id)
+        assert len(body["vehiculos"]) == 1
+        assert body["vehiculos"][0]["vehiculo_id"] == str(vehiculo.id)
+        assert body["vehiculos"][0]["codigo_interno"] == vehiculo.codigo_interno
+        assert body["vehiculos"][0]["matricula"] == vehiculo.matricula
+
+    def test_servicio_inexistente_es_404(self, jefe_client):
+        r = jefe_client.get(self._path(uuid.uuid4()))
+        assert r.status_code == 404
+
+    def test_voluntario_basico_no_puede_ver(self, authenticated_client):
+        # voluntario básico NO tiene `inventario.ver`.
+        r = authenticated_client.get(self._path(uuid.uuid4()))
+        assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # E2E US-05-06/07: cerrar servicio libera asignaciones
 # ---------------------------------------------------------------------------
 
@@ -761,3 +819,139 @@ class TestCerrarServicioLiberaInventario:
             json={"vehiculo_id": str(vehiculo.id)},
         )
         assert r4.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# Dotación fija de material a vehículo (PR3 / SP-09)
+# ---------------------------------------------------------------------------
+
+
+class TestDotacionVehiculoEndpoints:
+    def _material_prestable(self, make_material):
+        from app.models.material import TipoMaterial
+
+        return make_material(tipo=TipoMaterial.PRESTABLE, cantidad=3)
+
+    def test_asignar_como_jefe_seccion_201(
+        self, client_for_role, vehiculo, make_material
+    ):
+        c = client_for_role(["jefe_seccion"])
+        mat = self._material_prestable(make_material)
+        r = c.post(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion",
+            json={"material_id": str(mat.id), "cantidad": 2},
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["material_id"] == str(mat.id)
+        assert body["material_nombre"] == mat.nombre
+        assert body["cantidad"] == 2
+        assert "fecha_asignacion" in body
+
+    def test_asignar_como_jefe_equipo_es_403(
+        self, client_for_role, vehiculo, make_material
+    ):
+        c = client_for_role(["jefe_equipo"])
+        mat = self._material_prestable(make_material)
+        r = c.post(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion",
+            json={"material_id": str(mat.id)},
+        )
+        assert r.status_code == 403
+
+    def test_asignar_material_personal_es_409(
+        self, client_for_role, vehiculo, make_material
+    ):
+        from app.models.material import TipoMaterial
+
+        c = client_for_role(["jefe_seccion"])
+        mat = make_material(tipo=TipoMaterial.PERSONAL)
+        r = c.post(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion",
+            json={"material_id": str(mat.id)},
+        )
+        assert r.status_code == 409
+
+    def test_asignar_vehiculo_inexistente_es_404(
+        self, client_for_role, make_material
+    ):
+        c = client_for_role(["jefe_seccion"])
+        mat = self._material_prestable(make_material)
+        r = c.post(
+            f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion",
+            json={"material_id": str(mat.id)},
+        )
+        assert r.status_code == 404
+
+    def test_listar_con_inventario_ver(
+        self, client_for_role, vehiculo, make_material
+    ):
+        jefe = client_for_role(["jefe_seccion"])
+        mat = self._material_prestable(make_material)
+        jefe.post(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion",
+            json={"material_id": str(mat.id)},
+        )
+        # El GET va gateado por `inventario.ver`: el tesorero (lectura de
+        # inventario, sin gestión de dotación) puede listar.
+        lector = client_for_role(["tesorero"])
+        r = lector.get(f"{BASE}/vehiculos/{vehiculo.id}/dotacion")
+        assert r.status_code == 200
+        items = r.json()
+        assert len(items) == 1
+        assert items[0]["material_nombre"] == mat.nombre
+
+    def test_listar_sin_inventario_ver_es_403(self, client_for_role, vehiculo):
+        # Un voluntario básico no tiene `inventario.ver`.
+        c = client_for_role(["voluntario"])
+        r = c.get(f"{BASE}/vehiculos/{vehiculo.id}/dotacion")
+        assert r.status_code == 403
+
+    def test_listar_vehiculo_inexistente_es_404(self, client_for_role):
+        c = client_for_role(["tesorero"])
+        r = c.get(f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion")
+        assert r.status_code == 404
+
+    def test_liberar_como_jefe_seccion_204(
+        self, client_for_role, vehiculo, make_material
+    ):
+        c = client_for_role(["jefe_seccion"])
+        mat = self._material_prestable(make_material)
+        creada = c.post(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion",
+            json={"material_id": str(mat.id)},
+        )
+        asignacion_id = creada.json()["id"]
+
+        r = c.delete(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion/{asignacion_id}"
+        )
+        assert r.status_code == 204
+
+        # Tras liberar, la lista queda vacía.
+        lista = c.get(f"{BASE}/vehiculos/{vehiculo.id}/dotacion")
+        assert lista.json() == []
+
+    def test_liberar_como_jefe_equipo_es_403(
+        self, client_for_role, vehiculo, make_material
+    ):
+        jefe_seccion = client_for_role(["jefe_seccion"])
+        mat = self._material_prestable(make_material)
+        creada = jefe_seccion.post(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion",
+            json={"material_id": str(mat.id)},
+        )
+        asignacion_id = creada.json()["id"]
+
+        jefe_equipo = client_for_role(["jefe_equipo"])
+        r = jefe_equipo.delete(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion/{asignacion_id}"
+        )
+        assert r.status_code == 403
+
+    def test_liberar_inexistente_es_404(self, client_for_role, vehiculo):
+        c = client_for_role(["jefe_seccion"])
+        r = c.delete(
+            f"{BASE}/vehiculos/{vehiculo.id}/dotacion/{uuid.uuid4()}"
+        )
+        assert r.status_code == 404

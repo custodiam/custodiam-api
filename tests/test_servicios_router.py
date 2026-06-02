@@ -82,6 +82,43 @@ class TestListarYObtener:
         assert r.status_code == 200
         assert {s["titulo"] for s in r.json()} == {"A"}
 
+    def test_filtro_por_rango_de_fechas(self, authenticated_client, make_servicio):
+        from datetime import datetime as _dt
+
+        make_servicio(titulo="Mayo", fecha_inicio=_dt(2026, 5, 10, 9, 0))
+        make_servicio(titulo="Junio", fecha_inicio=_dt(2026, 6, 15, 9, 0))
+        make_servicio(titulo="Julio", fecha_inicio=_dt(2026, 7, 20, 9, 0))
+        r = authenticated_client.get(
+            BASE, params={"desde": "2026-06-01", "hasta": "2026-06-30"}
+        )
+        assert r.status_code == 200
+        assert r.headers["X-Total-Count"] == "1"
+        assert {s["titulo"] for s in r.json()} == {"Junio"}
+
+    def test_filtro_hasta_incluye_servicios_del_ultimo_dia(
+        self, authenticated_client, make_servicio
+    ):
+        # Un servicio a las 18:00 del día `hasta` debe entrar (rango
+        # inclusivo del día completo, no recortado a las 00:00).
+        from datetime import datetime as _dt
+
+        make_servicio(titulo="Tarde", fecha_inicio=_dt(2026, 6, 30, 18, 0))
+        r = authenticated_client.get(
+            BASE, params={"desde": "2026-06-01", "hasta": "2026-06-30"}
+        )
+        assert r.status_code == 200
+        assert {s["titulo"] for s in r.json()} == {"Tarde"}
+
+    def test_filtro_desde_posterior_a_hasta_es_422(self, authenticated_client):
+        r = authenticated_client.get(
+            BASE, params={"desde": "2026-07-01", "hasta": "2026-06-01"}
+        )
+        assert r.status_code == 422
+
+    def test_filtro_fecha_mal_formada_es_422(self, authenticated_client):
+        r = authenticated_client.get(BASE, params={"desde": "no-es-fecha"})
+        assert r.status_code == 422
+
     def test_obtener_existente(self, authenticated_client, servicio_borrador):
         r = authenticated_client.get(f"{BASE}/{servicio_borrador.id}")
         assert r.status_code == 200
@@ -94,6 +131,76 @@ class TestListarYObtener:
     def test_paginacion_limit_supera_200_es_422(self, authenticated_client):
         r = authenticated_client.get(BASE, params={"limit": 999})
         assert r.status_code == 422
+
+
+class TestInscritosCountEnJson:
+    """`inscritos_count` aparece en el JSON de lista y de detalle."""
+
+    def _inscribir(self, db_session, servicio_id, voluntario_id):
+        from datetime import datetime
+
+        from app.models.inscripcion_servicio import (
+            InscripcionServicio,
+            TipoInscripcion,
+        )
+
+        db_session.add(
+            InscripcionServicio(
+                servicio_id=servicio_id,
+                voluntario_id=voluntario_id,
+                tipo=TipoInscripcion.INSCRITO,
+                fecha=datetime(2026, 5, 27, 10, 0),
+            )
+        )
+        db_session.commit()
+
+    def test_lista_expone_inscritos_count_por_servicio(
+        self, authenticated_client, make_servicio, make_voluntario, db_session
+    ):
+        from datetime import datetime as _dt
+
+        # Servicio con 2 inscritos.
+        s_dos = make_servicio(titulo="Con dos", fecha_inicio=_dt(2026, 7, 1, 9, 0))
+        for _ in range(2):
+            v = make_voluntario(nombre=f"V{uuid.uuid4().hex[:6]}")
+            self._inscribir(db_session, s_dos.id, v.id)
+        # Servicio sin inscritos.
+        s_cero = make_servicio(titulo="Sin nadie", fecha_inicio=_dt(2026, 6, 1, 9, 0))
+        # Servicio con 5 inscritos.
+        s_cinco = make_servicio(titulo="Con cinco", fecha_inicio=_dt(2026, 8, 1, 9, 0))
+        for _ in range(5):
+            v = make_voluntario(nombre=f"V{uuid.uuid4().hex[:6]}")
+            self._inscribir(db_session, s_cinco.id, v.id)
+
+        r = authenticated_client.get(BASE)
+        assert r.status_code == 200
+        por_id = {s["id"]: s["inscritos_count"] for s in r.json()}
+        assert por_id[str(s_dos.id)] == 2
+        assert por_id[str(s_cero.id)] == 0
+        assert por_id[str(s_cinco.id)] == 5
+
+    def test_detalle_expone_inscritos_count(
+        self, authenticated_client, servicio_publicado, make_voluntario, db_session
+    ):
+        for _ in range(3):
+            v = make_voluntario(nombre=f"V{uuid.uuid4().hex[:6]}")
+            self._inscribir(db_session, servicio_publicado.id, v.id)
+        r = authenticated_client.get(f"{BASE}/{servicio_publicado.id}")
+        assert r.status_code == 200
+        assert r.json()["inscritos_count"] == 3
+
+    def test_detalle_inscritos_count_tras_convocar(
+        self, client_for_role, servicio_publicado, make_voluntario
+    ):
+        c = client_for_role(["jefe_equipo"])
+        ids = [str(make_voluntario(nombre=f"V{i}").id) for i in range(5)]
+        c.post(
+            f"{BASE}/{servicio_publicado.id}/convocar",
+            json={"voluntario_ids": ids},
+        )
+        r = c.get(f"{BASE}/{servicio_publicado.id}")
+        assert r.status_code == 200
+        assert r.json()["inscritos_count"] == 5
 
 
 # ---------------------------------------------------------------------------

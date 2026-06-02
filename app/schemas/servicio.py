@@ -5,9 +5,10 @@ CU-03 (convocar), CU-04 (apuntarse / desapuntarse) y CU-07 (cerrar).
 """
 
 from datetime import datetime
+from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.inscripcion_servicio import TipoInscripcion
 from app.models.servicio import EstadoServicio, TipoServicio
@@ -15,6 +16,26 @@ from app.models.servicio import EstadoServicio, TipoServicio
 # ---------------------------------------------------------------------------
 # Servicio
 # ---------------------------------------------------------------------------
+
+
+def _validar_coordenadas(lat: float | None, lng: float | None) -> None:
+    """Valida las coordenadas geográficas opcionales (PR2-geo, SP-09).
+
+    Reglas, intencionadamente en Pydantic y no como CHECK en BD:
+
+    - Rango: ``lat`` ∈ [-90, 90], ``lng`` ∈ [-180, 180].
+    - "Ambos o ninguno": no se admite fijar solo una de las dos.
+    """
+
+    if (lat is None) != (lng is None):
+        raise ValueError(
+            "ubicacion_lat y ubicacion_lng deben enviarse juntos "
+            "(ambos o ninguno)"
+        )
+    if lat is not None and not -90.0 <= lat <= 90.0:
+        raise ValueError("ubicacion_lat debe estar en el rango [-90, 90]")
+    if lng is not None and not -180.0 <= lng <= 180.0:
+        raise ValueError("ubicacion_lng debe estar en el rango [-180, 180]")
 
 
 class ServicioBase(BaseModel):
@@ -26,9 +47,16 @@ class ServicioBase(BaseModel):
     fecha_inicio: datetime
     fecha_fin: datetime | None = None
     ubicacion: str = Field(max_length=255)
+    ubicacion_lat: float | None = None
+    ubicacion_lng: float | None = None
     numero_voluntarios: int | None = Field(default=None, ge=0)
     notas_material: str | None = None
     notas_vehiculos: str | None = None
+
+    @model_validator(mode="after")
+    def _check_coordenadas(self) -> Self:
+        _validar_coordenadas(self.ubicacion_lat, self.ubicacion_lng)
+        return self
 
 
 class ServicioCreate(ServicioBase):
@@ -57,9 +85,16 @@ class ServicioUpdate(BaseModel):
     fecha_inicio: datetime | None = None
     fecha_fin: datetime | None = None
     ubicacion: str | None = Field(default=None, max_length=255)
+    ubicacion_lat: float | None = None
+    ubicacion_lng: float | None = None
     numero_voluntarios: int | None = Field(default=None, ge=0)
     notas_material: str | None = None
     notas_vehiculos: str | None = None
+
+    @model_validator(mode="after")
+    def _check_coordenadas(self) -> Self:
+        _validar_coordenadas(self.ubicacion_lat, self.ubicacion_lng)
+        return self
 
 
 class ServicioCerrar(BaseModel):
@@ -103,7 +138,10 @@ class ServicioSummary(BaseModel):
     fecha_inicio: datetime
     fecha_fin: datetime | None = None
     ubicacion: str
+    ubicacion_lat: float | None = None
+    ubicacion_lng: float | None = None
     numero_voluntarios: int | None = None
+    inscritos_count: int = 0
 
 
 class ServicioResponse(ServicioBase):
@@ -113,6 +151,7 @@ class ServicioResponse(ServicioBase):
 
     id: UUID
     estado: EstadoServicio
+    inscritos_count: int = 0
     observaciones_cierre: str | None = None
     creado_por_keycloak_id: str | None = None
     fecha_cierre: datetime | None = None
