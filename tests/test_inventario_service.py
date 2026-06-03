@@ -71,6 +71,71 @@ class TestCrearVehiculo:
 
 
 # ---------------------------------------------------------------------------
+# Borrado físico de material y vehículo (corrección de errores de alta)
+# ---------------------------------------------------------------------------
+
+
+class TestEliminarMaterial:
+    def test_eliminar_sin_asignaciones_borra(self, db_session, material):
+        from app.repositories import inventario as repo
+
+        service.eliminar_material(db_session, material.id)
+        assert repo.get_material(db_session, material.id) is None
+
+    def test_eliminar_con_asignacion_a_servicio_lanza_en_uso(
+        self, db_session, servicio_publicado, make_material
+    ):
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=10)
+        service.asignar_material_a_servicio(
+            db_session,
+            material_id=m.id,
+            servicio_id=servicio_publicado.id,
+            cantidad=2,
+        )
+        with pytest.raises(service.MaterialEnUso):
+            service.eliminar_material(db_session, m.id)
+
+    def test_eliminar_inexistente_lanza_404(self, db_session):
+        with pytest.raises(service.MaterialNoEncontrado):
+            service.eliminar_material(db_session, uuid.uuid4())
+
+
+class TestEliminarVehiculo:
+    def test_eliminar_sin_asignaciones_borra(self, db_session, vehiculo):
+        from app.repositories import inventario as repo
+
+        service.eliminar_vehiculo(db_session, vehiculo.id)
+        assert repo.get_vehiculo(db_session, vehiculo.id) is None
+
+    def test_eliminar_con_asignacion_a_servicio_lanza_en_uso(
+        self, db_session, servicio_publicado, vehiculo
+    ):
+        service.asignar_vehiculo_a_servicio(
+            db_session,
+            vehiculo_id=vehiculo.id,
+            servicio_id=servicio_publicado.id,
+        )
+        with pytest.raises(service.VehiculoEnUso):
+            service.eliminar_vehiculo(db_session, vehiculo.id)
+
+    def test_eliminar_con_dotacion_lanza_en_uso(
+        self, db_session, make_material, make_vehiculo
+    ):
+        # La dotación fija referencia el vehículo por AsignacionMaterial.
+        v = make_vehiculo()
+        m = make_material(tipo=TipoMaterial.PRESTABLE, cantidad=2)
+        service.asignar_dotacion_vehiculo(
+            db_session, vehiculo_id=v.id, material_id=m.id
+        )
+        with pytest.raises(service.VehiculoEnUso):
+            service.eliminar_vehiculo(db_session, v.id)
+
+    def test_eliminar_inexistente_lanza_404(self, db_session):
+        with pytest.raises(service.VehiculoNoEncontrado):
+            service.eliminar_vehiculo(db_session, uuid.uuid4())
+
+
+# ---------------------------------------------------------------------------
 # Incidencias (CU-24)
 # ---------------------------------------------------------------------------
 

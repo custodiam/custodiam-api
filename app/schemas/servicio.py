@@ -145,7 +145,16 @@ class ServicioSummary(BaseModel):
 
 
 class ServicioResponse(ServicioBase):
-    """Schema de respuesta completo."""
+    """Schema de respuesta completo.
+
+    Los campos ``estoy_inscrito`` y ``mi_tipo_inscripcion`` son relativos
+    al usuario que hace la petición: indican si el voluntario vinculado a
+    su cuenta de Keycloak tiene inscripción en este servicio y de qué tipo
+    (``inscrito`` por self-service o ``convocado`` por un mando). Si la
+    cuenta no está vinculada a un voluntario o no hay inscripción, valen
+    ``False`` / ``None``. El router los puebla en el GET de detalle; en
+    otros endpoints conservan sus valores por defecto.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -157,6 +166,8 @@ class ServicioResponse(ServicioBase):
     fecha_cierre: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    estoy_inscrito: bool = False
+    mi_tipo_inscripcion: TipoInscripcion | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,12 +193,17 @@ class VoluntarioInscritoResponse(BaseModel):
     Aplana la asociación a un único objeto por voluntario, exponiendo
     los campos mínimos para identificarlo y diferenciar si llegó por
     inscripción propia o por convocatoria.
+
+    El ``telefono`` es opcional porque es un dato de contacto sujeto a
+    RGPD: el router lo devuelve con valor solo a los mandos con
+    ``fichaje.ver_voluntarios_en_servicio`` y como ``None`` al resto del
+    personal inscrito (B5).
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     voluntario_id: UUID
     nombre: str
-    telefono: str
+    telefono: str | None = None
     tipo: TipoInscripcion
     fecha: datetime

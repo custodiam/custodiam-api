@@ -37,6 +37,8 @@ Excepciones de dominio
 - :class:`EstadoIncidenciaInvalido` → 422 (payload inválido)
 - :class:`MaterialEnEstadoFinal` → 409
 - :class:`ServicioCerrado` → 409 (no se asignan recursos a servicios cerrados)
+- :class:`MaterialEnUso` → 409 (borrado físico de material con asignaciones)
+- :class:`VehiculoEnUso` → 409 (borrado físico de vehículo con asignaciones)
 """
 
 from __future__ import annotations
@@ -150,6 +152,27 @@ class VehiculoOcupado(RecursoSolapado):  # noqa: N818 — castellano
 
 class MaterialSolapado(RecursoSolapado):  # noqa: N818 — castellano
     """No quedan unidades de material libres en el intervalo solicitado."""
+
+
+class MaterialEnUso(InventarioError):  # noqa: N818 — castellano
+    """El material tiene asignaciones (a voluntario, servicio o vehículo) y no
+    admite borrado físico.
+
+    El borrado se reserva para corregir errores de alta de un material que
+    nunca llegó a usarse. Cualquier fila ``AsignacionMaterial`` (activa o
+    histórica) bloquearía el DELETE por la FK ``materiales.id``; se comprueba
+    antes para devolver un 409 con un mensaje claro.
+    """
+
+
+class VehiculoEnUso(InventarioError):  # noqa: N818 — castellano
+    """El vehículo tiene asignaciones (a servicio o como dotación de material)
+    y no admite borrado físico.
+
+    Análogo a :class:`MaterialEnUso`: tanto una ``AsignacionVehiculo`` como
+    una ``AsignacionMaterial`` de dotación referencian al vehículo por FK
+    (sin ON DELETE CASCADE) y bloquearían el DELETE.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +427,48 @@ def actualizar_vehiculo(
     patch = data.model_dump(exclude_unset=True)
     _validar_ubicacion_base(session, patch.get("ubicacion_base_id"))
     return repo.update_vehiculo(session, vehiculo, patch)
+
+
+def eliminar_material(session: Session, material_id: uuid.UUID) -> None:
+    """Borrado físico de un material (corrección de errores de alta).
+
+    Solo procede si el material nunca tuvo asignaciones: cualquier fila
+    ``AsignacionMaterial`` (activa o histórica) lo referencia por FK
+    (``materiales.id`` sin ON DELETE CASCADE) y bloquearía el DELETE. Si hay
+    asignaciones se lanza :class:`MaterialEnUso` (→ 409) para preservar el
+    histórico; la baja correcta de un material en uso es reportarlo como
+    incidencia (CU-24), no borrarlo.
+    """
+
+    material = obtener_material(session, material_id)  # 404 si no existe
+    asignaciones = repo.count_asignaciones_material(session, material_id)
+    if asignaciones:
+        raise MaterialEnUso(
+            f"el material tiene {asignaciones} asignación(es); no se puede "
+            "borrar (repórtalo como incidencia en su lugar)"
+        )
+    repo.delete_material(session, material)
+
+
+def eliminar_vehiculo(session: Session, vehiculo_id: uuid.UUID) -> None:
+    """Borrado físico de un vehículo (corrección de errores de alta).
+
+    Solo procede si el vehículo nunca tuvo asignaciones: una
+    ``AsignacionVehiculo`` (a servicio) o una ``AsignacionMaterial`` de
+    dotación lo referencian por FK (``vehiculos.id`` sin ON DELETE CASCADE) y
+    bloquearían el DELETE. Si hay asignaciones se lanza
+    :class:`VehiculoEnUso` (→ 409); la baja correcta de un vehículo en uso es
+    reportarlo como incidencia (CU-24), no borrarlo.
+    """
+
+    vehiculo = obtener_vehiculo(session, vehiculo_id)  # 404 si no existe
+    asignaciones = repo.count_asignaciones_vehiculo(session, vehiculo_id)
+    if asignaciones:
+        raise VehiculoEnUso(
+            f"el vehículo tiene {asignaciones} asignación(es); no se puede "
+            "borrar (repórtalo como incidencia en su lugar)"
+        )
+    repo.delete_vehiculo(session, vehiculo)
 
 
 # ---------------------------------------------------------------------------

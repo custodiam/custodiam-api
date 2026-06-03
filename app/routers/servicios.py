@@ -144,17 +144,34 @@ def listar_servicios(
 def obtener_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
-    _: Annotated[
+    user: Annotated[
         CurrentUser, Depends(require_permission(Permission.SERVICIOS_VER_PUBLICADOS))
     ],
 ):
+    """Devuelve el detalle del servicio.
+
+    Además de los campos del servicio, puebla ``estoy_inscrito`` y
+    ``mi_tipo_inscripcion`` relativos al usuario que pregunta: resuelve el
+    voluntario vinculado a su cuenta de Keycloak y consulta su inscripción.
+    Si la cuenta no está vinculada a un voluntario o no hay inscripción,
+    ambos campos quedan en ``False`` / ``None`` (no es un error).
+    """
+
     try:
-        return service.obtener(session, servicio_id)
+        servicio = service.obtener(session, servicio_id)
     except service.ServicioNoEncontrado as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Servicio no encontrado: {e}",
         ) from e
+
+    mi_tipo = service.tipo_inscripcion_de_keycloak_id(
+        session, servicio_id=servicio_id, keycloak_id=user.sub
+    )
+    respuesta = ServicioResponse.model_validate(servicio)
+    respuesta.estoy_inscrito = mi_tipo is not None
+    respuesta.mi_tipo_inscripcion = mi_tipo
+    return respuesta
 
 
 # ---------------------------------------------------------------------------
@@ -457,18 +474,31 @@ def desapuntarse_de_servicio(
 @router.get(
     "/{servicio_id}/voluntarios",
     response_model=list[VoluntarioInscritoResponse],
-    summary="Listar voluntarios de un servicio (jefe+)",
+    summary="Listar personal inscrito en un servicio",
 )
 def listar_voluntarios_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
-    _: Annotated[
-        CurrentUser,
-        Depends(
-            require_permission(Permission.FICHAJE_VER_VOLUNTARIOS_EN_SERVICIO)
-        ),
-    ],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
 ):
+    """Lista el personal inscrito en un servicio.
+
+    La lectura se gatea por ``servicios.ver_publicados`` para que un
+    voluntario inscrito vea con quién comparte el servicio. El teléfono,
+    en cambio, es un dato de contacto sujeto a RGPD: solo lo ven los
+    mandos con ``fichaje.ver_voluntarios_en_servicio``; al resto se le
+    devuelve ``None`` en ese campo (B5).
+    """
+
+    if not user.has_permission(Permission.SERVICIOS_VER_PUBLICADOS):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Se requiere el permiso: "
+                f"{Permission.SERVICIOS_VER_PUBLICADOS.value}"
+            ),
+        )
+
     try:
         pares = service.listar_voluntarios(session, servicio_id)
     except service.ServicioNoEncontrado as e:
@@ -477,11 +507,14 @@ def listar_voluntarios_servicio(
             detail=f"Servicio no encontrado: {e}",
         ) from e
 
+    puede_ver_telefono = user.has_permission(
+        Permission.FICHAJE_VER_VOLUNTARIOS_EN_SERVICIO
+    )
     return [
         VoluntarioInscritoResponse(
             voluntario_id=v.id,
             nombre=v.nombre,
-            telefono=v.telefono,
+            telefono=v.telefono if puede_ver_telefono else None,
             tipo=i.tipo,
             fecha=i.fecha,
         )
