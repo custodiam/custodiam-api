@@ -294,6 +294,51 @@ class TestActualizar:
 
 
 # ---------------------------------------------------------------------------
+# DELETE /servicios/{id}
+# ---------------------------------------------------------------------------
+
+
+class TestEliminarRouter:
+    def test_delete_como_jefe_equipo_borra_204(
+        self, client_for_role, servicio_borrador
+    ):
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/{servicio_borrador.id}")
+        assert r.status_code == 204
+        assert c.get(f"{BASE}/{servicio_borrador.id}").status_code == 404
+
+    def test_delete_como_voluntario_es_403(
+        self, authenticated_client, servicio_borrador
+    ):
+        r = authenticated_client.delete(f"{BASE}/{servicio_borrador.id}")
+        assert r.status_code == 403
+
+    def test_delete_inexistente_es_404(self, client_for_role):
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/{uuid.uuid4()}")
+        assert r.status_code == 404
+
+    def test_delete_con_inscripcion_es_409(
+        self, client_for_role, db_session, servicio_borrador, voluntario
+    ):
+        from datetime import datetime
+
+        from app.models.inscripcion_servicio import TipoInscripcion
+        from app.repositories import servicios as repo
+
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio_borrador.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 7, 1, 9, 0),
+        )
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/{servicio_borrador.id}")
+        assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
 # Transiciones de estado
 # ---------------------------------------------------------------------------
 

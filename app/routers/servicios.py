@@ -228,6 +228,41 @@ def actualizar_servicio(
         ) from e
 
 
+@router.delete(
+    "/{servicio_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar un servicio (borrado físico, solo si está vacío)",
+)
+def eliminar_servicio(
+    servicio_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.SERVICIOS_CREAR_PREVENTIVO)),
+    ],
+):
+    """Borra un servicio para corregir errores de creación.
+
+    Mismo permiso que crear/editar (quien crea el recurso lo gestiona). Solo
+    procede si el servicio no tiene inscripciones, fichajes ni recursos
+    asignados; en caso contrario la baja correcta es el cierre (409).
+    """
+
+    try:
+        service.eliminar(session, servicio_id)
+    except service.ServicioNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Servicio no encontrado: {e}",
+        ) from e
+    except service.ServicioConActividad as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ---------------------------------------------------------------------------
 # Transiciones de estado
 # ---------------------------------------------------------------------------

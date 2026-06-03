@@ -959,6 +959,15 @@ def asignar_vehiculo_a_servicio(
     return asignacion
 
 
+def contar_asignaciones_de_servicio(
+    session: Session, servicio_id: uuid.UUID
+) -> int:
+    """Número de asignaciones (material + vehículo) que referencian al
+    servicio. Lo usa el borrado de servicios para no dejar FKs huérfanas."""
+
+    return repo.count_asignaciones_servicio(session, servicio_id)
+
+
 # ---------------------------------------------------------------------------
 # Lectura del inventario de un servicio (R1 / Opción 1B)
 # ---------------------------------------------------------------------------
