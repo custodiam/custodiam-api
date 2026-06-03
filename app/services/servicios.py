@@ -104,16 +104,6 @@ class InscripcionNoPermitidaEnEsteEstado(ServicioError):  # noqa: N818
     """El servicio no admite inscripciones en su estado actual."""
 
 
-class ServicioConActividad(ServicioError):  # noqa: N818 — castellano
-    """El servicio tiene dependencias (inscripciones, fichajes o recursos
-    asignados) y no admite borrado físico.
-
-    El borrado se reserva para corregir errores de creación (un servicio
-    vacío). Un servicio con actividad se cierra (CU-07), que preserva el
-    histórico para auditoría; no se borra.
-    """
-
-
 # ---------------------------------------------------------------------------
 # Tabla de transiciones válidas
 # ---------------------------------------------------------------------------
@@ -294,19 +284,24 @@ def convocar(
     fcm_client: FcmAdminClient | None = None,
     ntfy_client: NtfyClient | None = None,
     actor_keycloak_id: str | None = None,
-) -> tuple[Servicio, list[InscripcionServicio]]:
-    """CU-03. Convoca voluntarios y pasa el servicio a ACTIVO.
+) -> Servicio:
+    """CU-03. Notifica a los voluntarios y pasa el servicio a ACTIVO.
 
-    Si ``voluntario_ids`` es ``None`` o vacío, convoca a todos los
+    Decisión del PO: convocar es SOLO notificar + activar. NO crea
+    inscripciones ni "apunta" a nadie: el contador de inscritos refleja
+    únicamente a quien se inscribe (self-service), de modo que no se infla
+    por la convocatoria. Cada voluntario es libre de inscribirse (o no) tras
+    recibir el aviso.
+
+    Si ``voluntario_ids`` es ``None`` o vacío, notifica a todos los
     voluntarios activos (US-03-04). Si trae ids concretos, solo esos
     (US-03-05 / US-03-06).
 
-    Si ``fcm_client`` o ``ntfy_client`` están presentes (Epic E06), tras
-    materializar las inscripciones se dispara el fan-out de
-    notificaciones push (FCM) y, para emergencias, también el canal
-    redundante ntfy. La importación de ``app.services.notificaciones``
-    se hace dentro de la función para evitar dependencia circular entre
-    módulos service.
+    Si ``fcm_client`` o ``ntfy_client`` están presentes (Epic E06) se
+    dispara el fan-out de notificaciones push (FCM) y, para emergencias,
+    también el canal redundante ntfy. La importación de
+    ``app.services.notificaciones`` se hace dentro de la función para evitar
+    dependencia circular entre módulos service.
     """
 
     servicio = repo.get(session, servicio_id)
@@ -318,38 +313,12 @@ def convocar(
         _validar_transicion(servicio.estado, EstadoServicio.ACTIVO, servicio.tipo)
         repo.set_estado(session, servicio, nuevo_estado=EstadoServicio.ACTIVO)
 
-    # Resolver el universo de convocados.
+    # Resolver el universo de destinatarios de la notificación.
     ids: list[uuid.UUID]
     if voluntario_ids:
         ids = list(voluntario_ids)
     else:
         ids = repo.list_ids_voluntarios_activos(session)
-
-    cuando = fecha or datetime.now()
-    inscripciones = []
-    for vol_id in ids:
-        inscripcion = repo.upsert_inscripcion(
-            session,
-            servicio_id=servicio.id,
-            voluntario_id=vol_id,
-            tipo=TipoInscripcion.CONVOCADO,
-            fecha=cuando,
-        )
-        inscripciones.append(inscripcion)
-        # Cada convocado genera un evento INSCRIPCION_SERVICIO con el
-        # actor (mando) que lanzó la convocatoria.
-        _registrar_evento_voluntario(
-            session,
-            voluntario_id=vol_id,
-            tipo_str="inscripcion_servicio",
-            payload={
-                "servicio_id": str(servicio.id),
-                "servicio_titulo": servicio.titulo,
-                "tipo_servicio": servicio.tipo.value,
-                "via": "convocatoria",
-            },
-            actor_keycloak_id=actor_keycloak_id,
-        )
 
     if fcm_client is not None or ntfy_client is not None:
         from app.services import notificaciones as notificaciones_service
@@ -373,7 +342,7 @@ def convocar(
                 servicio.id,
             )
 
-    return servicio, inscripciones
+    return servicio
 
 
 def cerrar(
@@ -433,14 +402,25 @@ def cerrar(
 
 
 def eliminar(session: Session, servicio_id: uuid.UUID) -> None:
-    """Borrado físico de un servicio (corrección de errores de creación).
+    """Borrado físico de un servicio con arrastre de toda su actividad.
 
-    Solo procede si el servicio está vacío: sin inscripciones, sin fichajes
-    y sin recursos asignados. Para un servicio con actividad la baja correcta
-    es el cierre (CU-07), que conserva el histórico para auditoría. Las FKs a
-    ``servicios.id`` (inscripciones, fichajes, asignaciones) no tienen
-    ON DELETE CASCADE, así que cualquier dependencia bloquearía el DELETE; se
-    comprueba antes para devolver un 409 con un mensaje claro.
+    Decisión del PO: el borrado SIEMPRE procede, sin bloqueos. Sirve para
+    corregir errores de creación, así que arrastra en cascada todas las
+    filas hijas. Las FKs a ``servicios.id`` (inscripciones, fichajes,
+    asignaciones) no tienen ON DELETE CASCADE, de modo que hay que borrarlas
+    explícitamente antes del DELETE del servicio o el motor lo rechaza.
+
+    Orden del arrastre:
+
+    1. Liberar las asignaciones de inventario (devolver material/vehículos a
+       OPERATIVO) y luego borrar sus filas.
+    2. Borrar las inscripciones del servicio.
+    3. Borrar los fichajes del servicio (el PO acepta este arrastre).
+    4. Borrar el propio servicio.
+
+    El audit log del voluntario (``voluntario_eventos``) NO se toca: guarda
+    el ``servicio_id`` dentro del payload JSON, sin FK a ``servicios.id``, de
+    modo que no bloquea el DELETE ni conviene perder su histórico.
     """
 
     servicio = repo.get(session, servicio_id)
@@ -450,18 +430,19 @@ def eliminar(session: Session, servicio_id: uuid.UUID) -> None:
     from app.repositories import fichajes as fichajes_repo
     from app.services import inventario as inventario_service
 
-    inscripciones = repo.count_inscripciones(session, servicio_id)
-    fichajes = len(fichajes_repo.list_por_servicio(session, servicio_id))
-    recursos = inventario_service.contar_asignaciones_de_servicio(
-        session, servicio_id
+    # 1. Inventario: liberar (estado → OPERATIVO) y luego borrar las filas.
+    inventario_service.liberar_asignaciones_de_servicio(
+        session, servicio_id=servicio_id, cuando=datetime.now()
     )
-    if inscripciones or fichajes or recursos:
-        raise ServicioConActividad(
-            f"el servicio tiene {inscripciones} inscripción(es), {fichajes} "
-            f"fichaje(s) y {recursos} recurso(s) asignado(s); ciérralo en "
-            "lugar de borrarlo"
-        )
+    inventario_service.eliminar_asignaciones_de_servicio(session, servicio_id)
 
+    # 2. Inscripciones.
+    repo.delete_inscripciones_de_servicio(session, servicio_id)
+
+    # 3. Fichajes (import diferido como en `cerrar`, evita circular).
+    fichajes_repo.delete_por_servicio(session, servicio_id)
+
+    # 4. El propio servicio.
     repo.delete(session, servicio)
 
 
@@ -538,10 +519,9 @@ def desapuntarse_propio(
 ) -> None:
     """CU-04 alternativo A. El voluntario se da de baja del servicio.
 
-    Solo está permitido para inscripciones de tipo ``INSCRITO`` (las
-    convocatorias hechas por un mando no pueden cancelarse por el
-    propio voluntario — eso requeriría una decisión adicional fuera
-    del scope de E03).
+    Decisión del PO: el voluntario puede darse de baja de CUALQUIER
+    inscripción propia, sea ``INSCRITO`` o ``CONVOCADO``. Es libre de no
+    acudir aunque lo hayan convocado; la baja solo elimina su propia fila.
     """
 
     inscripcion = repo.get_inscripcion(
@@ -549,10 +529,6 @@ def desapuntarse_propio(
     )
     if inscripcion is None:
         raise NoInscrito(str(servicio_id))
-    if inscripcion.tipo != TipoInscripcion.INSCRITO:
-        raise InscripcionNoPermitidaEnEsteEstado(
-            "no se puede cancelar una convocatoria desde el propio voluntario"
-        )
     repo.delete_inscripcion(session, inscripcion)
     _registrar_evento_voluntario(
         session,
