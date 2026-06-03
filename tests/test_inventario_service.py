@@ -339,6 +339,21 @@ class TestAsignarMaterialAServicio:
                 cantidad=3,
             )
 
+    def test_asignar_material_a_servicio_cerrado_falla(
+        self, db_session, make_servicio, make_material
+    ):
+        from app.models.servicio import EstadoServicio
+
+        cerrado = make_servicio(estado=EstadoServicio.CERRADO)
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=10)
+        with pytest.raises(service.ServicioCerrado):
+            service.asignar_material_a_servicio(
+                db_session,
+                material_id=m.id,
+                servicio_id=cerrado.id,
+                cantidad=1,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Asignar vehículo a servicio (CU-22 / US-05-07)
@@ -393,6 +408,19 @@ class TestAsignarVehiculoAServicio:
                 db_session,
                 vehiculo_id=vehiculo.id,
                 servicio_id=otro.id,
+            )
+
+    def test_asignar_vehiculo_a_servicio_cerrado_falla(
+        self, db_session, make_servicio, vehiculo
+    ):
+        from app.models.servicio import EstadoServicio
+
+        cerrado = make_servicio(estado=EstadoServicio.CERRADO)
+        with pytest.raises(service.ServicioCerrado):
+            service.asignar_vehiculo_a_servicio(
+                db_session,
+                vehiculo_id=vehiculo.id,
+                servicio_id=cerrado.id,
             )
 
 
