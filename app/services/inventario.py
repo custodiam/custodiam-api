@@ -328,6 +328,117 @@ def ocupacion_vehiculo(
     return (len(conflictos) == 0, _conflictos_payload(conflictos))
 
 
+def listar_vehiculos_disponibles_para_servicio(
+    session: Session,
+    *,
+    servicio_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 50,
+    q: str | None = None,
+    tipo=None,
+) -> tuple[list[Vehiculo], int]:
+    """Vehículos disponibles para un servicio en su intervalo (picker).
+
+    Reutiliza la Política A: descarta los vehículos no operativos
+    (AVERIADO / PERDIDO, ya filtrados en el repo) y los que solapan el
+    intervalo ``[servicio.fecha_inicio, servicio.fecha_fin)`` del servicio
+    destino. El solape se evalúa con la misma consulta que
+    :func:`ocupacion_vehiculo` (``repo.find_servicios_solapados_vehiculo``),
+    excluyendo el propio servicio del cálculo. Si el servicio tiene
+    ``fecha_fin`` NULL no se evalúa solape (regla 2 de Política A): sólo se
+    filtra por estado.
+
+    El servicio destino debe existir (``ServicioNoEncontrado`` → 404). La
+    paginación (``skip`` / ``limit``) se aplica sobre el conjunto ya
+    filtrado para que el cliente reciba ``X-Total-Count`` coherente con la
+    disponibilidad real.
+    """
+
+    servicio = _obtener_servicio(session, servicio_id)
+
+    candidatos = repo.list_vehiculos_candidatos_disponibilidad(
+        session, q=q, tipo=tipo
+    )
+
+    # Sin intervalo cerrado no se evalúa solape: todos los operativos valen.
+    if servicio.fecha_fin is None:
+        disponibles = candidatos
+    else:
+        disponibles = [
+            vehiculo
+            for vehiculo in candidatos
+            if not repo.find_servicios_solapados_vehiculo(
+                session,
+                vehiculo_id=vehiculo.id,
+                inicio=servicio.fecha_inicio,
+                fin=servicio.fecha_fin,
+                excluir_servicio_id=servicio_id,
+            )
+        ]
+
+    total = len(disponibles)
+    return disponibles[skip : skip + limit], total
+
+
+def listar_materiales_disponibles_para_servicio(
+    session: Session,
+    *,
+    servicio_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 50,
+    q: str | None = None,
+    tipo: TipoMaterial | None = None,
+    categoria: str | None = None,
+) -> tuple[list[Material], int]:
+    """Materiales con unidades libres para un servicio en su intervalo (picker).
+
+    Reutiliza la Política A: descarta el material no operativo (AVERIADO /
+    PERDIDO, ya filtrado en el repo) y el que no tiene ninguna unidad libre
+    en el intervalo del servicio destino, asumiendo que el picker pide UNA
+    unidad. El cálculo de unidades libres es el mismo que en
+    :func:`asignar_material_a_servicio`: el stock total menos lo
+    comprometido globalmente fuera de servicio (PERSONAL / PRESTAMO /
+    DOTACION_VEHICULO) menos lo reservado por servicios que solapan el
+    intervalo. Si el servicio tiene ``fecha_fin`` NULL no se evalúa solape
+    (regla 2): sólo cuenta el stock global comprometido.
+
+    El servicio destino debe existir (``ServicioNoEncontrado`` → 404). La
+    paginación se aplica sobre el conjunto ya filtrado.
+    """
+
+    servicio = _obtener_servicio(session, servicio_id)
+    evaluar_solape = servicio.fecha_fin is not None
+
+    disponibles: list[Material] = []
+    for material in repo.list_materiales_candidatos_disponibilidad(
+        session, q=q, tipo=tipo, categoria=categoria
+    ):
+        comprometidas_no_servicio = repo.count_unidades_asignadas_material(
+            session, material.id, excluir_tipo=TipoAsignacion.SERVICIO
+        )
+        reservadas_solapadas = 0
+        if evaluar_solape:
+            solapes = repo.find_solapes_material(
+                session,
+                material_id=material.id,
+                inicio=servicio.fecha_inicio,
+                fin=servicio.fecha_fin,
+                excluir_servicio_id=servicio_id,
+            )
+            reservadas_solapadas = sum(unidades for _, unidades in solapes)
+        libres = (
+            material.cantidad
+            - comprometidas_no_servicio
+            - reservadas_solapadas
+        )
+        # El picker reserva una unidad: basta con que quede al menos una.
+        if libres >= 1:
+            disponibles.append(material)
+
+    total = len(disponibles)
+    return disponibles[skip : skip + limit], total
+
+
 def ocupacion_material(
     session: Session,
     *,
@@ -1031,6 +1142,22 @@ def contar_asignaciones_de_servicio(
     servicio. Lo usa el borrado de servicios para no dejar FKs huérfanas."""
 
     return repo.count_asignaciones_servicio(session, servicio_id)
+
+
+def eliminar_asignaciones_de_servicio(
+    session: Session, servicio_id: uuid.UUID
+) -> int:
+    """Borra las filas de asignación (material + vehículo) del servicio.
+
+    Fachada del repositorio para el borrado en cascada de un servicio: las
+    FKs a ``servicios.id`` no tienen ON DELETE CASCADE, así que hay que
+    vaciar las asignaciones antes del DELETE del servicio. El borrado de
+    servicios libera primero los recursos (devolverlos a OPERATIVO con
+    :func:`liberar_asignaciones_de_servicio`) y luego invoca este borrado
+    para eliminar las filas. Devuelve el número de filas borradas.
+    """
+
+    return repo.delete_asignaciones_de_servicio(session, servicio_id)
 
 
 # ---------------------------------------------------------------------------

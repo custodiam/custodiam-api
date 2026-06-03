@@ -212,16 +212,40 @@ def listar_material(
     estado: EstadoInventario | None = None,
     tipo: TipoMaterial | None = None,
     categoria: str | None = None,
+    disponible_para_servicio: uuid.UUID | None = Query(
+        None,
+        description=(
+            "Si se indica, devuelve SOLO el material con unidades libres "
+            "para ese servicio en su intervalo (picker de asignación)."
+        ),
+    ),
 ):
-    items, total = service.listar_materiales(
-        session,
-        skip=skip,
-        limit=limit,
-        q=q,
-        estado=estado,
-        tipo=tipo,
-        categoria=categoria,
-    )
+    if disponible_para_servicio is not None:
+        try:
+            items, total = service.listar_materiales_disponibles_para_servicio(
+                session,
+                servicio_id=disponible_para_servicio,
+                skip=skip,
+                limit=limit,
+                q=q,
+                tipo=tipo,
+                categoria=categoria,
+            )
+        except service.ServicioNoEncontrado as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Servicio no encontrado: {e}",
+            ) from e
+    else:
+        items, total = service.listar_materiales(
+            session,
+            skip=skip,
+            limit=limit,
+            q=q,
+            estado=estado,
+            tipo=tipo,
+            categoria=categoria,
+        )
     response.headers["X-Total-Count"] = str(total)
     return items
 
@@ -587,10 +611,33 @@ def listar_vehiculos(
     q: str | None = None,
     estado: EstadoInventario | None = None,
     tipo: TipoVehiculo | None = None,
+    disponible_para_servicio: uuid.UUID | None = Query(
+        None,
+        description=(
+            "Si se indica, devuelve SOLO los vehículos disponibles para ese "
+            "servicio en su intervalo (picker de asignación)."
+        ),
+    ),
 ):
-    items, total = service.listar_vehiculos(
-        session, skip=skip, limit=limit, q=q, estado=estado, tipo=tipo
-    )
+    if disponible_para_servicio is not None:
+        try:
+            items, total = service.listar_vehiculos_disponibles_para_servicio(
+                session,
+                servicio_id=disponible_para_servicio,
+                skip=skip,
+                limit=limit,
+                q=q,
+                tipo=tipo,
+            )
+        except service.ServicioNoEncontrado as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Servicio no encontrado: {e}",
+            ) from e
+    else:
+        items, total = service.listar_vehiculos(
+            session, skip=skip, limit=limit, q=q, estado=estado, tipo=tipo
+        )
     response.headers["X-Total-Count"] = str(total)
     return items
 

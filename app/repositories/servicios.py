@@ -234,6 +234,30 @@ def delete_inscripcion(
     session.commit()
 
 
+def delete_inscripciones_de_servicio(
+    session: Session, servicio_id: uuid.UUID
+) -> int:
+    """Borra TODAS las inscripciones del servicio.
+
+    Soporta el borrado en cascada del servicio: la FK
+    ``inscripciones.servicio_id`` no tiene ON DELETE CASCADE, así que hay
+    que vaciar las filas antes del DELETE del servicio. Devuelve el número
+    de filas borradas.
+    """
+
+    inscripciones = list(
+        session.exec(
+            select(InscripcionServicio).where(
+                InscripcionServicio.servicio_id == servicio_id
+            )
+        ).all()
+    )
+    for inscripcion in inscripciones:
+        session.delete(inscripcion)
+    session.commit()
+    return len(inscripciones)
+
+
 def list_voluntarios_por_servicio(
     session: Session, servicio_id: uuid.UUID
 ) -> list[tuple[Voluntario, InscripcionServicio]]:

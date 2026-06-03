@@ -189,9 +189,11 @@ class TestInscritosCountEnJson:
         assert r.status_code == 200
         assert r.json()["inscritos_count"] == 3
 
-    def test_detalle_inscritos_count_tras_convocar(
+    def test_detalle_inscritos_count_no_cambia_tras_convocar(
         self, client_for_role, servicio_publicado, make_voluntario
     ):
+        # Convocar solo notifica y activa (decisión PO): no inscribe a nadie,
+        # así que el contador de inscritos no se mueve.
         c = client_for_role(["jefe_equipo"])
         ids = [str(make_voluntario(nombre=f"V{i}").id) for i in range(5)]
         c.post(
@@ -200,7 +202,8 @@ class TestInscritosCountEnJson:
         )
         r = c.get(f"{BASE}/{servicio_publicado.id}")
         assert r.status_code == 200
-        assert r.json()["inscritos_count"] == 5
+        assert r.json()["estado"] == "activo"
+        assert r.json()["inscritos_count"] == 0
 
 
 class TestEstoyInscritoEnDetalle:
@@ -395,9 +398,11 @@ class TestEliminarRouter:
         r = c.delete(f"{BASE}/{uuid.uuid4()}")
         assert r.status_code == 404
 
-    def test_delete_con_inscripcion_es_409(
+    def test_delete_con_inscripcion_borra_204(
         self, client_for_role, db_session, servicio_borrador, voluntario
     ):
+        # Decisión del PO: el borrado procede aunque haya inscripciones; las
+        # arrastra en cascada y devuelve 204.
         from datetime import datetime
 
         from app.models.inscripcion_servicio import TipoInscripcion
@@ -412,7 +417,9 @@ class TestEliminarRouter:
         )
         c = client_for_role(["jefe_equipo"])
         r = c.delete(f"{BASE}/{servicio_borrador.id}")
-        assert r.status_code == 409
+        assert r.status_code == 204
+        assert c.get(f"{BASE}/{servicio_borrador.id}").status_code == 404
+        assert repo.count_inscripciones(db_session, servicio_borrador.id) == 0
 
 
 # ---------------------------------------------------------------------------

@@ -248,7 +248,7 @@ def actualizar_servicio(
 @router.delete(
     "/{servicio_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Eliminar un servicio (borrado físico, solo si está vacío)",
+    summary="Eliminar un servicio (borrado físico con arrastre en cascada)",
 )
 def eliminar_servicio(
     servicio_id: uuid.UUID,
@@ -260,9 +260,10 @@ def eliminar_servicio(
 ):
     """Borra un servicio para corregir errores de creación.
 
-    Mismo permiso que crear/editar (quien crea el recurso lo gestiona). Solo
-    procede si el servicio no tiene inscripciones, fichajes ni recursos
-    asignados; en caso contrario la baja correcta es el cierre (409).
+    Mismo permiso que crear/editar (quien crea el recurso lo gestiona). El
+    borrado siempre procede (decisión del PO) y arrastra en cascada las
+    inscripciones, los fichajes y las asignaciones de inventario del
+    servicio; los recursos se liberan a OPERATIVO antes de borrar sus filas.
     """
 
     try:
@@ -271,11 +272,6 @@ def eliminar_servicio(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Servicio no encontrado: {e}",
-        ) from e
-    except service.ServicioConActividad as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
         ) from e
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -323,22 +319,23 @@ def convocar_servicio(
     ],
     body: ServicioConvocar = ServicioConvocar(),
 ):
-    """Convoca voluntarios al servicio.
+    """Convoca (notifica) voluntarios y pasa el servicio a ACTIVO.
 
-    Si ``voluntario_ids`` está vacío, convoca a todos los activos
+    Si ``voluntario_ids`` está vacío, notifica a todos los activos
     (US-03-04). Si trae ids, solo esos (US-03-05). Si el servicio no
     está aún en ACTIVO, intenta la transición a ACTIVO; si la transición
     no es válida (p. ej. un preventivo en borrador), devuelve 409.
 
-    El fan-out a Firebase Cloud Messaging y a ntfy (Epic E06) se dispara
-    automáticamente tras crear las inscripciones; ambos clientes están
-    inyectados aquí y delegan en :mod:`app.services.notificaciones`. Si
-    los clientes están deshabilitados en config, el envío es no-op y la
-    convocatoria se materializa igual en BD.
+    Convocar SOLO notifica y activa: no crea inscripciones. El contador de
+    inscritos refleja únicamente a quien se inscribe por su cuenta. El
+    fan-out a Firebase Cloud Messaging y a ntfy (Epic E06) se dispara
+    automáticamente; ambos clientes están inyectados aquí y delegan en
+    :mod:`app.services.notificaciones`. Si los clientes están deshabilitados
+    en config, el envío es no-op y el servicio se activa igual en BD.
     """
 
     try:
-        servicio, _inscripciones = service.convocar(
+        servicio = service.convocar(
             session,
             servicio_id,
             voluntario_ids=body.voluntario_ids or None,
@@ -458,14 +455,6 @@ def desapuntarse_de_servicio(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No estás inscrito en este servicio",
-        ) from e
-    except service.InscripcionNoPermitidaEnEsteEstado as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "No puedes cancelar una convocatoria desde tu cuenta; "
-                "pide al mando que te dé de baja"
-            ),
         ) from e
 
     return service.obtener(session, servicio_id)

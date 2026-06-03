@@ -2,9 +2,9 @@
 
 Orquesta el envío redundante FCM + ntfy y deja constancia en el audit
 log (:class:`Notificacion`). El consumidor primario es
-``app.services.servicios.convocar``, que tras crear las inscripciones
-disparadas por un mando llama a :func:`notificar_convocatoria` para
-notificar a los voluntarios convocados.
+``app.services.servicios.convocar``, que tras activar el servicio llama
+a :func:`notificar_convocatoria` para avisar a los voluntarios
+convocados. Convocar solo notifica: no crea inscripciones.
 
 Reglas de resiliencia
 ---------------------
