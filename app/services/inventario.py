@@ -36,6 +36,9 @@ Excepciones de dominio
 - :class:`TipoAsignacionNoCompatible` → 409
 - :class:`EstadoIncidenciaInvalido` → 422 (payload inválido)
 - :class:`MaterialEnEstadoFinal` → 409
+- :class:`ServicioCerrado` → 409 (no se asignan recursos a servicios cerrados)
+- :class:`MaterialEnUso` → 409 (borrado físico de material con asignaciones)
+- :class:`VehiculoEnUso` → 409 (borrado físico de vehículo con asignaciones)
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from sqlmodel import Session
 from app.models.asignacion_material import AsignacionMaterial, TipoAsignacion
 from app.models.asignacion_vehiculo import AsignacionVehiculo
 from app.models.material import EstadoInventario, Material, TipoMaterial
-from app.models.servicio import Servicio, TipoServicio
+from app.models.servicio import EstadoServicio, Servicio, TipoServicio
 from app.models.vehiculo import Vehiculo
 from app.repositories import inventario as repo
 from app.repositories import servicios as servicios_repo
@@ -87,6 +90,10 @@ class AsignacionNoEncontrada(InventarioError):  # noqa: N818 — castellano
 
 class ServicioNoEncontrado(InventarioError):  # noqa: N818 — castellano
     """El servicio destino de la asignación no existe."""
+
+
+class ServicioCerrado(InventarioError):  # noqa: N818 — castellano
+    """El servicio destino está CERRADO y no admite nuevas asignaciones."""
 
 
 class MaterialNoOperativo(InventarioError):  # noqa: N818 — castellano
@@ -145,6 +152,27 @@ class VehiculoOcupado(RecursoSolapado):  # noqa: N818 — castellano
 
 class MaterialSolapado(RecursoSolapado):  # noqa: N818 — castellano
     """No quedan unidades de material libres en el intervalo solicitado."""
+
+
+class MaterialEnUso(InventarioError):  # noqa: N818 — castellano
+    """El material tiene asignaciones (a voluntario, servicio o vehículo) y no
+    admite borrado físico.
+
+    El borrado se reserva para corregir errores de alta de un material que
+    nunca llegó a usarse. Cualquier fila ``AsignacionMaterial`` (activa o
+    histórica) bloquearía el DELETE por la FK ``materiales.id``; se comprueba
+    antes para devolver un 409 con un mensaje claro.
+    """
+
+
+class VehiculoEnUso(InventarioError):  # noqa: N818 — castellano
+    """El vehículo tiene asignaciones (a servicio o como dotación de material)
+    y no admite borrado físico.
+
+    Análogo a :class:`MaterialEnUso`: tanto una ``AsignacionVehiculo`` como
+    una ``AsignacionMaterial`` de dotación referencian al vehículo por FK
+    (sin ON DELETE CASCADE) y bloquearían el DELETE.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +429,48 @@ def actualizar_vehiculo(
     return repo.update_vehiculo(session, vehiculo, patch)
 
 
+def eliminar_material(session: Session, material_id: uuid.UUID) -> None:
+    """Borrado físico de un material (corrección de errores de alta).
+
+    Solo procede si el material nunca tuvo asignaciones: cualquier fila
+    ``AsignacionMaterial`` (activa o histórica) lo referencia por FK
+    (``materiales.id`` sin ON DELETE CASCADE) y bloquearía el DELETE. Si hay
+    asignaciones se lanza :class:`MaterialEnUso` (→ 409) para preservar el
+    histórico; la baja correcta de un material en uso es reportarlo como
+    incidencia (CU-24), no borrarlo.
+    """
+
+    material = obtener_material(session, material_id)  # 404 si no existe
+    asignaciones = repo.count_asignaciones_material(session, material_id)
+    if asignaciones:
+        raise MaterialEnUso(
+            f"el material tiene {asignaciones} asignación(es); no se puede "
+            "borrar (repórtalo como incidencia en su lugar)"
+        )
+    repo.delete_material(session, material)
+
+
+def eliminar_vehiculo(session: Session, vehiculo_id: uuid.UUID) -> None:
+    """Borrado físico de un vehículo (corrección de errores de alta).
+
+    Solo procede si el vehículo nunca tuvo asignaciones: una
+    ``AsignacionVehiculo`` (a servicio) o una ``AsignacionMaterial`` de
+    dotación lo referencian por FK (``vehiculos.id`` sin ON DELETE CASCADE) y
+    bloquearían el DELETE. Si hay asignaciones se lanza
+    :class:`VehiculoEnUso` (→ 409); la baja correcta de un vehículo en uso es
+    reportarlo como incidencia (CU-24), no borrarlo.
+    """
+
+    vehiculo = obtener_vehiculo(session, vehiculo_id)  # 404 si no existe
+    asignaciones = repo.count_asignaciones_vehiculo(session, vehiculo_id)
+    if asignaciones:
+        raise VehiculoEnUso(
+            f"el vehículo tiene {asignaciones} asignación(es); no se puede "
+            "borrar (repórtalo como incidencia en su lugar)"
+        )
+    repo.delete_vehiculo(session, vehiculo)
+
+
 # ---------------------------------------------------------------------------
 # Incidencias y reparación (EN-05-04 + CU-24)
 # ---------------------------------------------------------------------------
@@ -646,6 +716,10 @@ def asignar_material_a_servicio(
     _validar_compatibilidad_tipo(material, TipoAsignacion.SERVICIO)
 
     servicio = _obtener_servicio(session, servicio_id)
+    if servicio.estado == EstadoServicio.CERRADO:
+        raise ServicioCerrado(
+            f"el servicio {servicio_id} está cerrado; no admite asignaciones"
+        )
 
     # Unidades comprometidas globalmente fuera de servicio (sin intervalo).
     comprometidas_no_servicio = repo.count_unidades_asignadas_material(
@@ -905,6 +979,10 @@ def asignar_vehiculo_a_servicio(
 
     vehiculo = obtener_vehiculo(session, vehiculo_id)
     servicio = _obtener_servicio(session, servicio_id)
+    if servicio.estado == EstadoServicio.CERRADO:
+        raise ServicioCerrado(
+            f"el servicio {servicio_id} está cerrado; no admite asignaciones"
+        )
 
     if vehiculo.estado in (EstadoInventario.AVERIADO, EstadoInventario.PERDIDO):
         raise VehiculoNoOperativo(
@@ -944,6 +1022,15 @@ def asignar_vehiculo_a_servicio(
             session, vehiculo, nuevo_estado=EstadoInventario.EN_USO
         )
     return asignacion
+
+
+def contar_asignaciones_de_servicio(
+    session: Session, servicio_id: uuid.UUID
+) -> int:
+    """Número de asignaciones (material + vehículo) que referencian al
+    servicio. Lo usa el borrado de servicios para no dejar FKs huérfanas."""
+
+    return repo.count_asignaciones_servicio(session, servicio_id)
 
 
 # ---------------------------------------------------------------------------

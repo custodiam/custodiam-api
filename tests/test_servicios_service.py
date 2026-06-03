@@ -82,6 +82,56 @@ class TestActualizar:
 
 
 # ---------------------------------------------------------------------------
+# Eliminar (borrado físico — corrección de errores de creación)
+# ---------------------------------------------------------------------------
+
+
+class TestEliminar:
+    def test_eliminar_servicio_vacio_borra(self, db_session, servicio_borrador):
+        from app.repositories import servicios as repo
+
+        service.eliminar(db_session, servicio_borrador.id)
+        assert repo.get(db_session, servicio_borrador.id) is None
+
+    def test_eliminar_inexistente_lanza_404(self, db_session):
+        with pytest.raises(service.ServicioNoEncontrado):
+            service.eliminar(db_session, uuid.uuid4())
+
+    def test_eliminar_con_inscripcion_lanza_409(
+        self, db_session, servicio_borrador, voluntario
+    ):
+        from app.repositories import servicios as repo
+
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio_borrador.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 7, 1, 9, 0),
+        )
+        with pytest.raises(service.ServicioConActividad):
+            service.eliminar(db_session, servicio_borrador.id)
+        # No se borró: la guarda corta antes del DELETE.
+        assert repo.get(db_session, servicio_borrador.id) is not None
+
+    def test_eliminar_con_material_asignado_lanza_409(
+        self, db_session, servicio_borrador, make_material
+    ):
+        from app.models.material import TipoMaterial
+        from app.services import inventario as inv_service
+
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=5)
+        inv_service.asignar_material_a_servicio(
+            db_session,
+            material_id=m.id,
+            servicio_id=servicio_borrador.id,
+            cantidad=1,
+        )
+        with pytest.raises(service.ServicioConActividad):
+            service.eliminar(db_session, servicio_borrador.id)
+
+
+# ---------------------------------------------------------------------------
 # Máquina de estados (EN-03-03)
 # ---------------------------------------------------------------------------
 

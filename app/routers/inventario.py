@@ -348,6 +348,42 @@ def actualizar_material(
         ) from e
 
 
+@router.delete(
+    "/material/{material_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar material (borrado físico, solo si nunca se asignó)",
+)
+def eliminar_material(
+    material_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.INVENTARIO_REGISTRAR_MATERIAL)),
+    ],
+):
+    """Borra un material para corregir errores de alta.
+
+    Mismo permiso que registrar/editar (quien da de alta el recurso lo
+    gestiona). Solo procede si el material no tiene ninguna asignación
+    (activa o histórica); en caso contrario la baja correcta es reportar la
+    incidencia (CU-24), que conserva el histórico para auditoría (409).
+    """
+
+    try:
+        service.eliminar_material(session, material_id)
+    except service.MaterialNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Material no encontrado: {e}",
+        ) from e
+    except service.MaterialEnUso as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ---------------------------------------------------------------------------
 # Material — Incidencias y reparación (CU-24)
 # ---------------------------------------------------------------------------
@@ -678,6 +714,43 @@ def actualizar_vehiculo(
         ) from e
 
 
+@router.delete(
+    "/vehiculos/{vehiculo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar vehículo (borrado físico, solo si nunca se asignó)",
+)
+def eliminar_vehiculo(
+    vehiculo_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.INVENTARIO_REGISTRAR_VEHICULO)),
+    ],
+):
+    """Borra un vehículo para corregir errores de alta.
+
+    Mismo permiso que registrar/editar (quien da de alta el recurso lo
+    gestiona). Solo procede si el vehículo no tiene ninguna asignación —ni a
+    servicio ni como dotación de material— (activa o histórica); en caso
+    contrario la baja correcta es reportar la incidencia (CU-24), que
+    conserva el histórico para auditoría (409).
+    """
+
+    try:
+        service.eliminar_vehiculo(session, vehiculo_id)
+    except service.VehiculoNoEncontrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehículo no encontrado: {e}",
+        ) from e
+    except service.VehiculoEnUso as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post(
     "/vehiculos/{vehiculo_id}/incidencia",
     response_model=VehiculoResponse,
@@ -896,6 +969,11 @@ def asignar_material_servicio(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Servicio no encontrado: {e}",
         ) from e
+    except service.ServicioCerrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except service.MaterialNoOperativo as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -950,6 +1028,11 @@ def asignar_vehiculo_servicio(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Servicio no encontrado: {e}",
         ) from e
+    except service.ServicioCerrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except service.VehiculoOcupado as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -971,9 +1054,13 @@ def asignar_vehiculo_servicio(
 def listar_inventario_servicio(
     servicio_id: uuid.UUID,
     session: SessionDep,
+    # La lectura de los recursos del PROPIO servicio se gatea por
+    # `servicios.ver_publicados` (que el voluntario raso tiene), no por
+    # `inventario.ver`: un voluntario inscrito puede ver qué material y
+    # vehículos lleva su servicio sin acceder al inventario global (B5).
     _: Annotated[
         CurrentUser,
-        Depends(require_permission(Permission.INVENTARIO_VER)),
+        Depends(require_permission(Permission.SERVICIOS_VER_PUBLICADOS)),
     ],
 ):
     try:

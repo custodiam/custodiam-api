@@ -203,6 +203,83 @@ class TestInscritosCountEnJson:
         assert r.json()["inscritos_count"] == 5
 
 
+class TestEstoyInscritoEnDetalle:
+    """`estoy_inscrito` / `mi_tipo_inscripcion` reflejan al usuario actual."""
+
+    def test_detalle_inscrito_self_service(
+        self, client_for_role, make_voluntario, servicio_publicado, db_session
+    ):
+        from datetime import datetime
+
+        from app.models.inscripcion_servicio import TipoInscripcion
+        from app.repositories import servicios as repo
+
+        # El voluntario en BD debe enlazar el `sub` del JWT del rol para
+        # que el mapeo keycloak→voluntario resuelva.
+        vol = make_voluntario(keycloak_id="user-jefe_equipo")
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=vol.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 6, 1, 10, 0),
+        )
+
+        c = client_for_role(["jefe_equipo"], sub="user-jefe_equipo")
+        r = c.get(f"{BASE}/{servicio_publicado.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["estoy_inscrito"] is True
+        assert body["mi_tipo_inscripcion"] == "inscrito"
+
+    def test_detalle_convocado(
+        self, client_for_role, make_voluntario, servicio_publicado, db_session
+    ):
+        from datetime import datetime
+
+        from app.models.inscripcion_servicio import TipoInscripcion
+        from app.repositories import servicios as repo
+
+        vol = make_voluntario(keycloak_id="user-jefe_equipo")
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=vol.id,
+            tipo=TipoInscripcion.CONVOCADO,
+            fecha=datetime(2026, 6, 1, 10, 0),
+        )
+
+        c = client_for_role(["jefe_equipo"], sub="user-jefe_equipo")
+        r = c.get(f"{BASE}/{servicio_publicado.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["estoy_inscrito"] is True
+        assert body["mi_tipo_inscripcion"] == "convocado"
+
+    def test_detalle_sin_inscripcion(
+        self, client_for_role, make_voluntario, servicio_publicado
+    ):
+        # Voluntario vinculado pero NO inscrito en este servicio.
+        make_voluntario(keycloak_id="user-jefe_equipo")
+        c = client_for_role(["jefe_equipo"], sub="user-jefe_equipo")
+        r = c.get(f"{BASE}/{servicio_publicado.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["estoy_inscrito"] is False
+        assert body["mi_tipo_inscripcion"] is None
+
+    def test_detalle_sin_voluntario_vinculado(
+        self, authenticated_client, servicio_publicado
+    ):
+        # `test-user-id` no enlaza ningún voluntario en BD: el detalle se
+        # sirve igual con estoy_inscrito=False (no 404).
+        r = authenticated_client.get(f"{BASE}/{servicio_publicado.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["estoy_inscrito"] is False
+        assert body["mi_tipo_inscripcion"] is None
+
+
 # ---------------------------------------------------------------------------
 # POST /servicios
 # ---------------------------------------------------------------------------
@@ -291,6 +368,51 @@ class TestActualizar:
             f"{BASE}/{servicio_borrador.id}", json={"ubicacion": "x"}
         )
         assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# DELETE /servicios/{id}
+# ---------------------------------------------------------------------------
+
+
+class TestEliminarRouter:
+    def test_delete_como_jefe_equipo_borra_204(
+        self, client_for_role, servicio_borrador
+    ):
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/{servicio_borrador.id}")
+        assert r.status_code == 204
+        assert c.get(f"{BASE}/{servicio_borrador.id}").status_code == 404
+
+    def test_delete_como_voluntario_es_403(
+        self, authenticated_client, servicio_borrador
+    ):
+        r = authenticated_client.delete(f"{BASE}/{servicio_borrador.id}")
+        assert r.status_code == 403
+
+    def test_delete_inexistente_es_404(self, client_for_role):
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/{uuid.uuid4()}")
+        assert r.status_code == 404
+
+    def test_delete_con_inscripcion_es_409(
+        self, client_for_role, db_session, servicio_borrador, voluntario
+    ):
+        from datetime import datetime
+
+        from app.models.inscripcion_servicio import TipoInscripcion
+        from app.repositories import servicios as repo
+
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio_borrador.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 7, 1, 9, 0),
+        )
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/{servicio_borrador.id}")
+        assert r.status_code == 409
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +586,20 @@ class TestDesapuntarse:
 
 
 class TestListarVoluntariosDeServicio:
+    def _inscribir(self, db_session, servicio_id, voluntario_id):
+        from datetime import datetime
+
+        from app.models.inscripcion_servicio import TipoInscripcion
+        from app.repositories import servicios as repo
+
+        return repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio_id,
+            voluntario_id=voluntario_id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 5, 27, 10, 0),
+        )
+
     def test_jefe_puede_listar_voluntarios(
         self,
         jefe_client,
@@ -471,37 +607,55 @@ class TestListarVoluntariosDeServicio:
         make_voluntario,
         db_session,
     ):
-        from datetime import datetime
-
-        from app.models.inscripcion_servicio import (
-            InscripcionServicio,
-            TipoInscripcion,
-        )
-
         ana = make_voluntario(nombre="Ana García")
-        db_session.add(
-            InscripcionServicio(
-                servicio_id=servicio_publicado.id,
-                voluntario_id=ana.id,
-                tipo=TipoInscripcion.INSCRITO,
-                fecha=datetime(2026, 5, 27, 10, 0),
-            )
-        )
-        db_session.commit()
+        self._inscribir(db_session, servicio_publicado.id, ana.id)
 
         r = jefe_client.get(f"{BASE}/{servicio_publicado.id}/voluntarios")
         assert r.status_code == 200
         nombres = [v["nombre"] for v in r.json()]
         assert "Ana García" in nombres
 
-    def test_voluntario_basico_no_puede_listar(
-        self, authenticated_client, servicio_publicado
+    def test_mando_ve_el_telefono_con_valor(
+        self, jefe_client, servicio_publicado, make_voluntario, db_session
     ):
-        # `voluntario` no tiene `fichaje.ver_voluntarios_en_servicio`.
+        # B5: un mando (jefe_equipo tiene `fichaje.ver_voluntarios_en_servicio`)
+        # ve el teléfono del personal inscrito.
+        ana = make_voluntario(nombre="Ana García", telefono="+34611111111")
+        self._inscribir(db_session, servicio_publicado.id, ana.id)
+
+        r = jefe_client.get(f"{BASE}/{servicio_publicado.id}/voluntarios")
+        assert r.status_code == 200
+        assert r.json()[0]["telefono"] == "+34611111111"
+
+    def test_secretario_ve_el_telefono_con_valor(
+        self, client_for_role, servicio_publicado, make_voluntario, db_session
+    ):
+        # `secretario` también tiene `fichaje.ver_voluntarios_en_servicio`.
+        ana = make_voluntario(nombre="Ana García", telefono="+34622222222")
+        self._inscribir(db_session, servicio_publicado.id, ana.id)
+
+        c = client_for_role(["secretario"])
+        r = c.get(f"{BASE}/{servicio_publicado.id}/voluntarios")
+        assert r.status_code == 200
+        assert r.json()[0]["telefono"] == "+34622222222"
+
+    def test_voluntario_basico_lista_pero_sin_telefono(
+        self, authenticated_client, servicio_publicado, make_voluntario, db_session
+    ):
+        # B5: el voluntario raso tiene `servicios.ver_publicados`, así que
+        # puede ver el personal inscrito (200), pero NO
+        # `fichaje.ver_voluntarios_en_servicio`, de modo que el teléfono
+        # (dato RGPD) le llega como None.
+        ana = make_voluntario(nombre="Ana García", telefono="+34633333333")
+        self._inscribir(db_session, servicio_publicado.id, ana.id)
+
         r = authenticated_client.get(
             f"{BASE}/{servicio_publicado.id}/voluntarios"
         )
-        assert r.status_code == 403
+        assert r.status_code == 200
+        body = r.json()
+        assert body[0]["nombre"] == "Ana García"
+        assert body[0]["telefono"] is None
 
 
 # ---------------------------------------------------------------------------

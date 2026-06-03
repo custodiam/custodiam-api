@@ -102,6 +102,29 @@ def set_estado_material(
     return material
 
 
+def count_asignaciones_material(session: Session, material_id: uuid.UUID) -> int:
+    """Cuenta TODAS las filas ``AsignacionMaterial`` (activas o no) que
+    referencian al material. Soporta la guarda de borrado físico: cualquier
+    fila viva impediría el DELETE por la FK ``materiales.id`` (sin
+    ON DELETE CASCADE)."""
+
+    return int(
+        session.exec(
+            select(func.count()).where(
+                AsignacionMaterial.material_id == material_id
+            )
+        ).one()
+    )
+
+
+def delete_material(session: Session, material: Material) -> None:
+    """Borrado físico del material. El Service valida antes que no tenga
+    asignaciones; aquí solo borra."""
+
+    session.delete(material)
+    session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Vehiculo
 # ---------------------------------------------------------------------------
@@ -186,6 +209,36 @@ def set_estado_vehiculo(
     return vehiculo
 
 
+def count_asignaciones_vehiculo(session: Session, vehiculo_id: uuid.UUID) -> int:
+    """Cuenta TODAS las filas (activas o no) que referencian al vehículo por
+    cualquiera de sus dos FKs. Soporta la guarda de borrado físico: ambas FKs
+    a ``vehiculos.id`` (sin ON DELETE CASCADE) bloquearían el DELETE.
+
+    - ``AsignacionVehiculo.vehiculo_id``: asignaciones del vehículo a servicios.
+    - ``AsignacionMaterial.vehiculo_id``: dotación fija de material que viaja
+      con el vehículo (``tipo=DOTACION_VEHICULO``)."""
+
+    veh = session.exec(
+        select(func.count()).where(
+            AsignacionVehiculo.vehiculo_id == vehiculo_id
+        )
+    ).one()
+    mat = session.exec(
+        select(func.count()).where(
+            AsignacionMaterial.vehiculo_id == vehiculo_id
+        )
+    ).one()
+    return int(veh) + int(mat)
+
+
+def delete_vehiculo(session: Session, vehiculo: Vehiculo) -> None:
+    """Borrado físico del vehículo. El Service valida antes que no tenga
+    asignaciones (ni de servicio ni de dotación); aquí solo borra."""
+
+    session.delete(vehiculo)
+    session.commit()
+
+
 # ---------------------------------------------------------------------------
 # AsignacionMaterial
 # ---------------------------------------------------------------------------
@@ -233,6 +286,21 @@ def list_asignaciones_activas_servicio_material(
         AsignacionMaterial.fecha_devolucion.is_(None),
     )
     return list(session.exec(stmt).all())
+
+
+def count_asignaciones_servicio(session: Session, servicio_id: uuid.UUID) -> int:
+    """Cuenta TODAS las asignaciones (material + vehículo, activas o no) que
+    referencian al servicio. Soporta la guarda de borrado de servicios:
+    cualquier fila viva impediría el DELETE por la FK ``servicios.id`` (sin
+    ON DELETE CASCADE)."""
+
+    mat = session.exec(
+        select(func.count()).where(AsignacionMaterial.servicio_id == servicio_id)
+    ).one()
+    veh = session.exec(
+        select(func.count()).where(AsignacionVehiculo.servicio_id == servicio_id)
+    ).one()
+    return int(mat) + int(veh)
 
 
 def create_asignacion_material(

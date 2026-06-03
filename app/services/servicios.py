@@ -104,6 +104,16 @@ class InscripcionNoPermitidaEnEsteEstado(ServicioError):  # noqa: N818
     """El servicio no admite inscripciones en su estado actual."""
 
 
+class ServicioConActividad(ServicioError):  # noqa: N818 — castellano
+    """El servicio tiene dependencias (inscripciones, fichajes o recursos
+    asignados) y no admite borrado físico.
+
+    El borrado se reserva para corregir errores de creación (un servicio
+    vacío). Un servicio con actividad se cierra (CU-07), que preserva el
+    histórico para auditoría; no se borra.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Tabla de transiciones válidas
 # ---------------------------------------------------------------------------
@@ -190,6 +200,33 @@ def listar_voluntarios(
 
     obtener(session, servicio_id)  # 404 si no existe
     return repo.list_voluntarios_por_servicio(session, servicio_id)
+
+
+def tipo_inscripcion_de_keycloak_id(
+    session: Session,
+    *,
+    servicio_id: uuid.UUID,
+    keycloak_id: str,
+) -> TipoInscripcion | None:
+    """Tipo de inscripción del usuario actual en un servicio (lectura suave).
+
+    Resuelve el voluntario a partir del ``sub`` del JWT y devuelve el
+    ``tipo`` de su inscripción en el servicio, o ``None`` si la cuenta de
+    Keycloak no está vinculada a un voluntario en BD o el voluntario no
+    está inscrito. A diferencia del flujo de inscripción/baja, aquí la
+    ausencia de voluntario NO es un error: el detalle del servicio se
+    sirve igual, solo que con ``estoy_inscrito=False``.
+    """
+
+    from app.repositories import voluntarios as voluntarios_repo
+
+    voluntario = voluntarios_repo.get_by_keycloak_id(session, keycloak_id)
+    if voluntario is None:
+        return None
+    inscripcion = repo.get_inscripcion(
+        session, servicio_id=servicio_id, voluntario_id=voluntario.id
+    )
+    return inscripcion.tipo if inscripcion is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +430,39 @@ def cerrar(
         fecha_cierre=cuando_cierre,
         observaciones_cierre=observaciones,
     )
+
+
+def eliminar(session: Session, servicio_id: uuid.UUID) -> None:
+    """Borrado físico de un servicio (corrección de errores de creación).
+
+    Solo procede si el servicio está vacío: sin inscripciones, sin fichajes
+    y sin recursos asignados. Para un servicio con actividad la baja correcta
+    es el cierre (CU-07), que conserva el histórico para auditoría. Las FKs a
+    ``servicios.id`` (inscripciones, fichajes, asignaciones) no tienen
+    ON DELETE CASCADE, así que cualquier dependencia bloquearía el DELETE; se
+    comprueba antes para devolver un 409 con un mensaje claro.
+    """
+
+    servicio = repo.get(session, servicio_id)
+    if servicio is None:
+        raise ServicioNoEncontrado(str(servicio_id))
+
+    from app.repositories import fichajes as fichajes_repo
+    from app.services import inventario as inventario_service
+
+    inscripciones = repo.count_inscripciones(session, servicio_id)
+    fichajes = len(fichajes_repo.list_por_servicio(session, servicio_id))
+    recursos = inventario_service.contar_asignaciones_de_servicio(
+        session, servicio_id
+    )
+    if inscripciones or fichajes or recursos:
+        raise ServicioConActividad(
+            f"el servicio tiene {inscripciones} inscripción(es), {fichajes} "
+            f"fichaje(s) y {recursos} recurso(s) asignado(s); ciérralo en "
+            "lugar de borrarlo"
+        )
+
+    repo.delete(session, servicio)
 
 
 # ---------------------------------------------------------------------------
