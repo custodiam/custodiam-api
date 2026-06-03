@@ -3,8 +3,10 @@
 Verifica el contrato entre `services/servicios.py` y
 `services/notificaciones.py` cuando se inyectan los clientes FCM y
 ntfy en la llamada de convocatoria. No mockea a nivel de repository:
-la inserción de Inscripcion y de Notificacion en BD también se
-verifica.
+la inserción de Notificacion en BD también se verifica. Convocar solo
+notifica y activa: no crea inscripciones (decisión del PO), de modo que
+estos tests comprueban el envío y la transición de estado, no filas de
+inscripción.
 """
 
 from __future__ import annotations
@@ -63,7 +65,7 @@ class TestConvocarEmergencia:
             ubicacion="Pinares de Venecia",
         )
 
-        servicio_devuelto, inscripciones = servicio_service.convocar(
+        servicio_devuelto = servicio_service.convocar(
             db_session,
             servicio.id,
             voluntario_ids=[vol_con_dispositivo.id],
@@ -72,7 +74,6 @@ class TestConvocarEmergencia:
         )
 
         assert servicio_devuelto.estado == EstadoServicio.ACTIVO
-        assert len(inscripciones) == 1
 
         # FCM: un envío crítico al token del voluntario.
         assert len(fcm.envios) == 1
@@ -138,14 +139,13 @@ class TestRetrocompatibilidadSinClientes:
             estado=EstadoServicio.PUBLICADO,
         )
 
-        servicio_devuelto, inscripciones = servicio_service.convocar(
+        servicio_devuelto = servicio_service.convocar(
             db_session,
             servicio.id,
             voluntario_ids=[vol_con_dispositivo.id],
         )
 
         assert servicio_devuelto.estado == EstadoServicio.ACTIVO
-        assert len(inscripciones) == 1
 
         notifs = db_session.exec(select(Notificacion)).all()
         assert notifs == []
@@ -160,9 +160,9 @@ class TestConvocatoriaCaeNotificacion:
         ntfy,
     ):
         """Defensa: un fallo catastrófico del subsistema de
-        notificaciones no debe revertir las inscripciones del servicio.
-        Forzamos un 5xx en FCM y comprobamos que la inscripción quedó
-        commiteada y el servicio en ACTIVO."""
+        notificaciones no debe revertir la activación del servicio.
+        Forzamos un 5xx en FCM y comprobamos que el servicio quedó en
+        ACTIVO pese al fallo de envío."""
 
         fcm_roto = FakeFcmAdmin(tokens_5xx={f"tok-{vol_con_dispositivo.id}"})
         servicio = make_servicio(
@@ -170,7 +170,7 @@ class TestConvocatoriaCaeNotificacion:
             estado=EstadoServicio.PUBLICADO,
         )
 
-        servicio_devuelto, inscripciones = servicio_service.convocar(
+        servicio_devuelto = servicio_service.convocar(
             db_session,
             servicio.id,
             voluntario_ids=[vol_con_dispositivo.id],
@@ -179,4 +179,3 @@ class TestConvocatoriaCaeNotificacion:
         )
 
         assert servicio_devuelto.estado == EstadoServicio.ACTIVO
-        assert len(inscripciones) == 1

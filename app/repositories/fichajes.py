@@ -89,6 +89,27 @@ def update(
     return fichaje
 
 
+def delete_por_servicio(session: Session, servicio_id: uuid.UUID) -> int:
+    """Borra TODOS los fichajes del servicio.
+
+    Soporta el borrado en cascada del servicio: la FK
+    ``fichajes.servicio_id`` no tiene ON DELETE CASCADE, así que hay que
+    vaciar los fichajes antes del DELETE del servicio. El PO acepta que el
+    borrado de un servicio arrastre sus fichajes (el borrado corrige
+    errores de creación). Devuelve el número de filas borradas.
+    """
+
+    fichajes = list(
+        session.exec(
+            select(Fichaje).where(Fichaje.servicio_id == servicio_id)
+        ).all()
+    )
+    for fichaje in fichajes:
+        session.delete(fichaje)
+    session.commit()
+    return len(fichajes)
+
+
 def horas_acumuladas(
     session: Session, voluntario_id: uuid.UUID
 ) -> tuple[int, int, int]:
@@ -126,6 +147,7 @@ def horas_acumuladas(
 # Re-export para los tests; el valor en sí es opcional.
 __all__ = [
     "create",
+    "delete_por_servicio",
     "get",
     "get_por_servicio_y_voluntario",
     "horas_acumuladas",

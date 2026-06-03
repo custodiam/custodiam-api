@@ -34,17 +34,19 @@ def get_material_por_codigo(session: Session, codigo: str) -> Material | None:
     return session.exec(stmt).first()
 
 
-def list_materiales(
-    session: Session,
+def _materiales_base_query(
     *,
-    skip: int = 0,
-    limit: int = 50,
     q: str | None = None,
     estado: EstadoInventario | None = None,
     tipo: TipoMaterial | None = None,
     categoria: str | None = None,
-) -> tuple[list[Material], int]:
-    """Lista paginada con filtros (US-05-10)."""
+):
+    """Construye el SELECT base de material con los filtros comunes.
+
+    Lo comparten el listado paginado (US-05-10) y la variante de
+    disponibilidad para servicio (picker): así un solo punto define cómo
+    se traducen los filtros ``q`` / ``estado`` / ``tipo`` / ``categoria``.
+    """
 
     base = select(Material)
     if estado is not None:
@@ -58,6 +60,24 @@ def list_materiales(
         base = base.where(
             or_(Material.nombre.ilike(pattern), Material.codigo.ilike(pattern))
         )
+    return base
+
+
+def list_materiales(
+    session: Session,
+    *,
+    skip: int = 0,
+    limit: int = 50,
+    q: str | None = None,
+    estado: EstadoInventario | None = None,
+    tipo: TipoMaterial | None = None,
+    categoria: str | None = None,
+) -> tuple[list[Material], int]:
+    """Lista paginada con filtros (US-05-10)."""
+
+    base = _materiales_base_query(
+        q=q, estado=estado, tipo=tipo, categoria=categoria
+    )
 
     total_stmt = select(func.count()).select_from(base.subquery())
     total = int(session.exec(total_stmt).one())
@@ -65,6 +85,30 @@ def list_materiales(
     items_stmt = base.order_by(Material.nombre).offset(skip).limit(limit)
     items = list(session.exec(items_stmt).all())
     return items, total
+
+
+def list_materiales_candidatos_disponibilidad(
+    session: Session,
+    *,
+    q: str | None = None,
+    tipo: TipoMaterial | None = None,
+    categoria: str | None = None,
+) -> list[Material]:
+    """Materiales candidatos a estar disponibles para un servicio (picker).
+
+    Devuelve la lista COMPLETA (sin paginar) de material operativo —se
+    excluyen los estados finales/no operativos AVERIADO y PERDIDO— que
+    pasa los filtros comunes. El descarte por stock comprometido en el
+    intervalo del servicio lo aplica el service (depende de cantidades,
+    no de una simple condición SQL), que pagina el resultado ya filtrado.
+    """
+
+    base = _materiales_base_query(q=q, tipo=tipo, categoria=categoria).where(
+        Material.estado.not_in(
+            (EstadoInventario.AVERIADO, EstadoInventario.PERDIDO)
+        )
+    )
+    return list(session.exec(base.order_by(Material.nombre)).all())
 
 
 def create_material(session: Session, data: dict[str, Any]) -> Material:
@@ -141,15 +185,18 @@ def get_vehiculo_por_codigo(
     return session.exec(stmt).first()
 
 
-def list_vehiculos(
-    session: Session,
+def _vehiculos_base_query(
     *,
-    skip: int = 0,
-    limit: int = 50,
     q: str | None = None,
     estado: EstadoInventario | None = None,
     tipo: TipoVehiculo | None = None,
-) -> tuple[list[Vehiculo], int]:
+):
+    """Construye el SELECT base de vehículo con los filtros comunes.
+
+    Lo comparten el listado paginado (US-05-10) y la variante de
+    disponibilidad para servicio (picker).
+    """
+
     base = select(Vehiculo)
     if estado is not None:
         base = base.where(Vehiculo.estado == estado)
@@ -163,6 +210,19 @@ def list_vehiculos(
                 Vehiculo.matricula.ilike(pattern),
             )
         )
+    return base
+
+
+def list_vehiculos(
+    session: Session,
+    *,
+    skip: int = 0,
+    limit: int = 50,
+    q: str | None = None,
+    estado: EstadoInventario | None = None,
+    tipo: TipoVehiculo | None = None,
+) -> tuple[list[Vehiculo], int]:
+    base = _vehiculos_base_query(q=q, estado=estado, tipo=tipo)
 
     total_stmt = select(func.count()).select_from(base.subquery())
     total = int(session.exec(total_stmt).one())
@@ -172,6 +232,28 @@ def list_vehiculos(
     )
     items = list(session.exec(items_stmt).all())
     return items, total
+
+
+def list_vehiculos_candidatos_disponibilidad(
+    session: Session,
+    *,
+    q: str | None = None,
+    tipo: TipoVehiculo | None = None,
+) -> list[Vehiculo]:
+    """Vehículos candidatos a estar disponibles para un servicio (picker).
+
+    Devuelve la lista COMPLETA (sin paginar) de vehículo operativo —se
+    excluyen AVERIADO y PERDIDO— que pasa los filtros comunes. El descarte
+    por solape de intervalo lo aplica el service (Política A), que pagina
+    el resultado ya filtrado.
+    """
+
+    base = _vehiculos_base_query(q=q, tipo=tipo).where(
+        Vehiculo.estado.not_in(
+            (EstadoInventario.AVERIADO, EstadoInventario.PERDIDO)
+        )
+    )
+    return list(session.exec(base.order_by(Vehiculo.codigo_interno)).all())
 
 
 def create_vehiculo(session: Session, data: dict[str, Any]) -> Vehiculo:
@@ -301,6 +383,39 @@ def count_asignaciones_servicio(session: Session, servicio_id: uuid.UUID) -> int
         select(func.count()).where(AsignacionVehiculo.servicio_id == servicio_id)
     ).one()
     return int(mat) + int(veh)
+
+
+def delete_asignaciones_de_servicio(
+    session: Session, servicio_id: uuid.UUID
+) -> int:
+    """Borra TODAS las filas de asignación (material + vehículo) del servicio.
+
+    Soporta el borrado en cascada del servicio (las FKs a ``servicios.id``
+    no tienen ON DELETE CASCADE, así que hay que vaciarlas explícitamente
+    antes del DELETE del servicio). Devuelve el número de filas borradas
+    para que el llamante pueda registrarlo o verificarlo. El Service libera
+    primero las asignaciones (devolver el recurso a OPERATIVO) y solo
+    después invoca este borrado.
+    """
+
+    materiales = list(
+        session.exec(
+            select(AsignacionMaterial).where(
+                AsignacionMaterial.servicio_id == servicio_id
+            )
+        ).all()
+    )
+    vehiculos = list(
+        session.exec(
+            select(AsignacionVehiculo).where(
+                AsignacionVehiculo.servicio_id == servicio_id
+            )
+        ).all()
+    )
+    for asignacion in (*materiales, *vehiculos):
+        session.delete(asignacion)
+    session.commit()
+    return len(materiales) + len(vehiculos)
 
 
 def create_asignacion_material(

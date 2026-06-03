@@ -87,6 +87,9 @@ class TestActualizar:
 
 
 class TestEliminar:
+    """Decisión del PO: el borrado SIEMPRE procede y arrastra en cascada
+    inscripciones, fichajes y asignaciones de inventario del servicio."""
+
     def test_eliminar_servicio_vacio_borra(self, db_session, servicio_borrador):
         from app.repositories import servicios as repo
 
@@ -97,7 +100,7 @@ class TestEliminar:
         with pytest.raises(service.ServicioNoEncontrado):
             service.eliminar(db_session, uuid.uuid4())
 
-    def test_eliminar_con_inscripcion_lanza_409(
+    def test_eliminar_con_inscripcion_borra_igualmente(
         self, db_session, servicio_borrador, voluntario
     ):
         from app.repositories import servicios as repo
@@ -109,15 +112,16 @@ class TestEliminar:
             tipo=TipoInscripcion.INSCRITO,
             fecha=datetime(2026, 7, 1, 9, 0),
         )
-        with pytest.raises(service.ServicioConActividad):
-            service.eliminar(db_session, servicio_borrador.id)
-        # No se borró: la guarda corta antes del DELETE.
-        assert repo.get(db_session, servicio_borrador.id) is not None
+        service.eliminar(db_session, servicio_borrador.id)
+        # El servicio y su inscripción desaparecen.
+        assert repo.get(db_session, servicio_borrador.id) is None
+        assert repo.count_inscripciones(db_session, servicio_borrador.id) == 0
 
-    def test_eliminar_con_material_asignado_lanza_409(
+    def test_eliminar_con_material_asignado_borra_igualmente(
         self, db_session, servicio_borrador, make_material
     ):
         from app.models.material import TipoMaterial
+        from app.repositories import servicios as repo
         from app.services import inventario as inv_service
 
         m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=5)
@@ -127,8 +131,73 @@ class TestEliminar:
             servicio_id=servicio_borrador.id,
             cantidad=1,
         )
-        with pytest.raises(service.ServicioConActividad):
-            service.eliminar(db_session, servicio_borrador.id)
+        service.eliminar(db_session, servicio_borrador.id)
+        assert repo.get(db_session, servicio_borrador.id) is None
+        assert (
+            inv_service.contar_asignaciones_de_servicio(
+                db_session, servicio_borrador.id
+            )
+            == 0
+        )
+
+    def test_eliminar_arrastra_vehiculo_inscripcion_y_fichaje(
+        self, db_session, make_servicio, make_vehiculo, voluntario
+    ):
+        """Borrado en cascada completo: un servicio con un vehículo asignado,
+        una inscripción y un fichaje se borra y no deja filas hijas."""
+
+        from app.models.servicio import EstadoServicio
+        from app.repositories import fichajes as fichajes_repo
+        from app.repositories import servicios as repo
+        from app.services import inventario as inv_service
+
+        # Servicio activo (admite fichaje y asignación de vehículo).
+        servicio = make_servicio(estado=EstadoServicio.ACTIVO)
+
+        # Una inscripción del voluntario.
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 7, 1, 9, 0),
+        )
+
+        # Un vehículo asignado al servicio.
+        vehiculo = make_vehiculo()
+        inv_service.asignar_vehiculo_a_servicio(
+            db_session,
+            vehiculo_id=vehiculo.id,
+            servicio_id=servicio.id,
+        )
+
+        # Un fichaje del voluntario en el servicio.
+        fichajes_repo.create(
+            db_session,
+            data=dict(
+                servicio_id=servicio.id,
+                voluntario_id=voluntario.id,
+                hora_entrada=datetime(2026, 7, 1, 9, 0),
+                hora_salida=None,
+                automatico=False,
+            ),
+        )
+
+        service.eliminar(db_session, servicio.id)
+
+        # No queda el servicio ni ninguna fila hija.
+        assert repo.get(db_session, servicio.id) is None
+        assert repo.count_inscripciones(db_session, servicio.id) == 0
+        assert (
+            inv_service.contar_asignaciones_de_servicio(db_session, servicio.id)
+            == 0
+        )
+        assert fichajes_repo.list_por_servicio(db_session, servicio.id) == []
+        # El vehículo se libera a OPERATIVO (no se borra).
+        from app.models.material import EstadoInventario
+
+        vehiculo_tras = inv_service.obtener_vehiculo(db_session, vehiculo.id)
+        assert vehiculo_tras.estado == EstadoInventario.OPERATIVO
 
 
 # ---------------------------------------------------------------------------
@@ -157,17 +226,24 @@ class TestPublicar:
 
 
 class TestConvocar:
+    """Convocar SOLO notifica y activa: no crea inscripciones (decisión PO).
+
+    El contador de inscritos no se infla por la convocatoria; solo refleja
+    a quien se inscribe por su cuenta. Estos tests verifican la transición
+    de estado y que el servicio no gana inscripciones al convocar.
+    """
+
     def test_convocar_desde_publicado_pasa_a_activo(
         self, db_session, servicio_publicado, voluntario
     ):
-        s, inscripciones = service.convocar(
+        s = service.convocar(
             db_session,
             servicio_publicado.id,
             voluntario_ids=[voluntario.id],
         )
         assert s.estado == EstadoServicio.ACTIVO
-        assert len(inscripciones) == 1
-        assert inscripciones[0].tipo == TipoInscripcion.CONVOCADO
+        # No se crea ninguna inscripción al convocar.
+        assert service.obtener(db_session, servicio_publicado.id).inscritos_count == 0
 
     def test_convocar_emergencia_desde_borrador_pasa_a_activo(
         self, db_session, make_servicio, voluntario
@@ -175,7 +251,7 @@ class TestConvocar:
         emergencia = make_servicio(tipo=TipoServicio.EMERGENCIA)
         # Forzamos estado BORRADOR (la factoría lo deja por defecto en BORRADOR
         # también para EMERGENCIA en este test específico).
-        s, _ = service.convocar(
+        s = service.convocar(
             db_session, emergencia.id, voluntario_ids=[voluntario.id]
         )
         assert s.estado == EstadoServicio.ACTIVO
@@ -190,40 +266,47 @@ class TestConvocar:
                 voluntario_ids=[voluntario.id],
             )
 
-    def test_convocar_sin_lista_convoca_a_todos_los_activos(
+    def test_convocar_sin_lista_activa_el_servicio(
         self, db_session, servicio_publicado, make_voluntario
     ):
-        activo1 = make_voluntario(nombre="Ana")
-        activo2 = make_voluntario(nombre="Bea")
-        # Un voluntario en baja no debe ser convocado.
+        make_voluntario(nombre="Ana")
+        make_voluntario(nombre="Bea")
+        # Un voluntario en baja no debe entrar en el universo de notificados.
         from app.models.voluntario import EstadoVoluntario
 
         make_voluntario(nombre="Carlos baja", estado=EstadoVoluntario.BAJA)
-        _, inscripciones = service.convocar(
+        s = service.convocar(
             db_session, servicio_publicado.id, voluntario_ids=None
         )
-        ids = {i.voluntario_id for i in inscripciones}
-        assert activo1.id in ids
-        assert activo2.id in ids
-        assert len(inscripciones) == 2
+        # Activa el servicio sin crear inscripciones para nadie.
+        assert s.estado == EstadoServicio.ACTIVO
+        assert service.obtener(db_session, servicio_publicado.id).inscritos_count == 0
 
-    def test_convocar_promociona_inscrito_a_convocado(
+    def test_convocar_no_toca_la_inscripcion_existente(
         self, db_session, servicio_publicado, voluntario
     ):
-        # Primero el voluntario se inscribe por su cuenta.
+        # Si el voluntario ya se inscribió por su cuenta, convocar no la
+        # promociona a CONVOCADO ni crea otra: solo activa el servicio.
         service.apuntarse_propio(
             db_session,
             servicio_id=servicio_publicado.id,
             voluntario_id=voluntario.id,
         )
-        # Después un mando lo convoca.
-        _, inscripciones = service.convocar(
+        service.convocar(
             db_session,
             servicio_publicado.id,
             voluntario_ids=[voluntario.id],
         )
-        assert len(inscripciones) == 1
-        assert inscripciones[0].tipo == TipoInscripcion.CONVOCADO
+        from app.repositories import servicios as repo
+
+        inscripcion = repo.get_inscripcion(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=voluntario.id,
+        )
+        assert inscripcion is not None
+        assert inscripcion.tipo == TipoInscripcion.INSCRITO
+        assert service.obtener(db_session, servicio_publicado.id).inscritos_count == 1
 
     def test_convocar_cerrado_falla(self, db_session, make_servicio, voluntario):
         cerrado = make_servicio(estado=EstadoServicio.CERRADO)
@@ -234,9 +317,13 @@ class TestConvocar:
 
 
 class TestInscritosCountTrasOperaciones:
-    """`inscritos_count` refleja el total real tras convocar/apuntarse."""
+    """`inscritos_count` refleja el total real de inscritos self-service.
 
-    def test_convocar_incrementa_inscritos_count(
+    Convocar no inscribe a nadie (decisión PO), así que no toca el contador;
+    solo lo mueven `apuntarse_propio` y `desapuntarse_propio`.
+    """
+
+    def test_convocar_no_incrementa_inscritos_count(
         self, db_session, servicio_publicado, make_voluntario
     ):
         v1 = make_voluntario(nombre="Ana")
@@ -247,7 +334,7 @@ class TestInscritosCountTrasOperaciones:
             voluntario_ids=[v1.id, v2.id],
         )
         s = service.obtener(db_session, servicio_publicado.id)
-        assert s.inscritos_count == 2
+        assert s.inscritos_count == 0
 
     def test_apuntarse_incrementa_inscritos_count(
         self, db_session, servicio_publicado, voluntario
@@ -414,21 +501,33 @@ class TestDesapuntarsePropio:
                 voluntario_id=voluntario.id,
             )
 
-    def test_desapuntarse_convocatoria_falla(
+    def test_desapuntarse_convocatoria_funciona(
         self, db_session, servicio_publicado, voluntario
     ):
-        # Si el voluntario fue CONVOCADO no puede cancelarse por su cuenta.
-        service.convocar(
+        # Decisión del PO: un voluntario CONVOCADO también puede darse de
+        # baja por su cuenta (es libre de no acudir aunque lo convoquen).
+        from app.repositories import servicios as repo
+
+        repo.upsert_inscripcion(
             db_session,
-            servicio_publicado.id,
-            voluntario_ids=[voluntario.id],
+            servicio_id=servicio_publicado.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.CONVOCADO,
+            fecha=datetime(2026, 7, 1, 9, 0),
         )
-        with pytest.raises(service.InscripcionNoPermitidaEnEsteEstado):
-            service.desapuntarse_propio(
+        service.desapuntarse_propio(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            voluntario_id=voluntario.id,
+        )
+        assert (
+            repo.get_inscripcion(
                 db_session,
                 servicio_id=servicio_publicado.id,
                 voluntario_id=voluntario.id,
             )
+            is None
+        )
 
 
 # ---------------------------------------------------------------------------

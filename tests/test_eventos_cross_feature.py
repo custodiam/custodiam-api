@@ -134,28 +134,30 @@ class TestServiciosService:
         assert len(eventos) == 1
         assert eventos[0].payload["servicio_id"] == str(servicio.id)
 
-    def test_convocar_genera_un_evento_por_voluntario_via_convocatoria(
+    def test_convocar_no_genera_eventos_de_inscripcion(
         self, db_session, yo, make_voluntario, make_servicio
     ):
+        # Decisión del PO: convocar solo notifica y activa; no inscribe a
+        # nadie, así que no genera eventos INSCRIPCION_SERVICIO. El audit
+        # log de inscripción lo produce el self-service (apuntarse_propio).
         otro = make_voluntario(
             keycloak_id="kc-otro", dni="77777777Y", nombre="Otro"
         )
         servicio = make_servicio(estado=EstadoServicio.PUBLICADO)
 
-        servicios_service.convocar(
+        servicio_devuelto = servicios_service.convocar(
             db_session,
             servicio.id,
             voluntario_ids=[yo.id, otro.id],
             actor_keycloak_id="kc-mando",
         )
 
+        assert servicio_devuelto.estado == EstadoServicio.ACTIVO
         for voluntario_id in (yo.id, otro.id):
             eventos = _eventos_por_tipo(
                 db_session, voluntario_id, TipoEventoVoluntario.INSCRIPCION_SERVICIO
             )
-            assert len(eventos) == 1
-            assert eventos[0].payload["via"] == "convocatoria"
-            assert eventos[0].actor_keycloak_id == "kc-mando"
+            assert eventos == []
 
 
 class TestFichajesService:

@@ -20,6 +20,7 @@ from datetime import datetime
 
 import pytest
 
+from app.models.asignacion_material import TipoAsignacion
 from app.models.material import TipoMaterial
 from app.models.servicio import EstadoServicio, TipoServicio
 from app.services import inventario as service
@@ -601,6 +602,306 @@ class TestEndpointOcupacion:
         )
         assert r.status_code == 200
         assert r.json()["disponible"] is False
+
+
+# ---------------------------------------------------------------------------
+# Filtro de disponibilidad en el listado (picker del frontend)
+# ---------------------------------------------------------------------------
+#
+# El listado de inventario admite `disponible_para_servicio=<uuid>`: con él,
+# devuelve SOLO los recursos disponibles para ese servicio en su intervalo,
+# reutilizando la Política A. Aquí se prueba a nivel de service (la lógica de
+# filtrado) y de router (el query param + el 404 del servicio destino).
+
+
+class TestServicioVehiculosDisponibles:
+    def test_vehiculo_comprometido_en_solape_no_aparece_y_libre_si(
+        self, db_session, make_servicio, make_vehiculo
+    ):
+        # `ocupado` está asignado a un servicio que solapa el destino → fuera.
+        # `libre` no tiene asignación alguna → dentro.
+        ocupado = make_vehiculo(codigo_interno="VH-OCU")
+        libre = make_vehiculo(codigo_interno="VH-LIB")
+        bloqueante = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_vehiculo_a_servicio(
+            db_session, vehiculo_id=ocupado.id, servicio_id=bloqueante.id
+        )
+        # Destino: 12-16, solapa con el bloqueante (09-14).
+        destino = _servicio(
+            make_servicio,
+            inicio=datetime(2026, 6, 1, 12, 0),
+            fin=datetime(2026, 6, 1, 16, 0),
+            estado=EstadoServicio.BORRADOR,
+        )
+
+        items, total = service.listar_vehiculos_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        ids = {v.id for v in items}
+        assert libre.id in ids
+        assert ocupado.id not in ids
+        assert total == 1
+
+    def test_excluye_el_propio_servicio_destino(
+        self, db_session, make_servicio, vehiculo
+    ):
+        # Un vehículo ya asignado al PROPIO destino sigue siendo "disponible"
+        # para él (se excluye del cálculo de solape): permite reabrir el picker.
+        destino = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_vehiculo_a_servicio(
+            db_session, vehiculo_id=vehiculo.id, servicio_id=destino.id
+        )
+        items, _ = service.listar_vehiculos_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        assert vehiculo.id in {v.id for v in items}
+
+    def test_averiado_no_aparece(
+        self, db_session, make_servicio, make_vehiculo
+    ):
+        from app.models.material import EstadoInventario
+
+        operativo = make_vehiculo(codigo_interno="VH-OK")
+        make_vehiculo(
+            codigo_interno="VH-KO", estado=EstadoInventario.AVERIADO
+        )
+        destino = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.BORRADOR,
+        )
+        items, total = service.listar_vehiculos_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        assert {v.id for v in items} == {operativo.id}
+        assert total == 1
+
+    def test_fecha_fin_null_no_filtra_por_solape(
+        self, db_session, make_servicio, make_vehiculo
+    ):
+        # El bloqueante ocupa 09-14, pero el destino tiene fin abierto: no se
+        # evalúa solape, así que el vehículo sigue apareciendo (Política A r.2).
+        ocupado = make_vehiculo(codigo_interno="VH-OCU")
+        bloqueante = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_vehiculo_a_servicio(
+            db_session, vehiculo_id=ocupado.id, servicio_id=bloqueante.id
+        )
+        destino = _servicio(
+            make_servicio, inicio=A_INI, fin=None,
+            estado=EstadoServicio.BORRADOR,
+        )
+        items, _ = service.listar_vehiculos_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        assert ocupado.id in {v.id for v in items}
+
+    def test_servicio_inexistente_404(self, db_session):
+        with pytest.raises(service.ServicioNoEncontrado):
+            service.listar_vehiculos_disponibles_para_servicio(
+                db_session, servicio_id=uuid.uuid4()
+            )
+
+
+class TestServicioMaterialesDisponibles:
+    def test_material_sin_stock_libre_no_aparece_y_con_stock_si(
+        self, db_session, make_servicio, make_material
+    ):
+        # `agotado`: 2 unidades, ambas reservadas por un servicio solapante.
+        # `con_stock`: 2 unidades, ninguna reservada.
+        agotado = make_material(
+            nombre="Conos", tipo=TipoMaterial.SERVICIO, cantidad=2
+        )
+        con_stock = make_material(
+            nombre="Vallas", tipo=TipoMaterial.SERVICIO, cantidad=2
+        )
+        bloqueante = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_material_a_servicio(
+            db_session, material_id=agotado.id, servicio_id=bloqueante.id,
+            cantidad=2,
+        )
+        # Destino: 12-16, solapa con el bloqueante (09-14).
+        destino = _servicio(
+            make_servicio,
+            inicio=datetime(2026, 6, 1, 12, 0),
+            fin=datetime(2026, 6, 1, 16, 0),
+            estado=EstadoServicio.BORRADOR,
+        )
+        items, total = service.listar_materiales_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        ids = {m.id for m in items}
+        assert con_stock.id in ids
+        assert agotado.id not in ids
+        assert total == 1
+
+    def test_solape_parcial_deja_una_unidad_libre_y_aparece(
+        self, db_session, make_servicio, make_material
+    ):
+        # 2 unidades, 1 reservada por solapante → queda 1 libre → aparece
+        # (el picker pide una sola unidad).
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=2)
+        bloqueante = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_material_a_servicio(
+            db_session, material_id=m.id, servicio_id=bloqueante.id, cantidad=1
+        )
+        destino = _servicio(
+            make_servicio,
+            inicio=datetime(2026, 6, 1, 12, 0),
+            fin=datetime(2026, 6, 1, 16, 0),
+            estado=EstadoServicio.BORRADOR,
+        )
+        items, _ = service.listar_materiales_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        assert m.id in {mat.id for mat in items}
+
+    def test_perdido_no_aparece(
+        self, db_session, make_servicio, make_material
+    ):
+        from app.models.material import EstadoInventario
+
+        operativo = make_material(tipo=TipoMaterial.SERVICIO, cantidad=1)
+        make_material(
+            tipo=TipoMaterial.SERVICIO,
+            cantidad=1,
+            estado=EstadoInventario.PERDIDO,
+        )
+        destino = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.BORRADOR,
+        )
+        items, total = service.listar_materiales_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        assert {m.id for m in items} == {operativo.id}
+        assert total == 1
+
+    def test_stock_consumido_fuera_de_servicio_no_aparece(
+        self, db_session, make_servicio, make_material, voluntario
+    ):
+        # Una sola unidad PRESTABLE, prestada a un voluntario (global, sin
+        # intervalo): no queda nada libre para ningún servicio.
+        m = make_material(tipo=TipoMaterial.PRESTABLE, cantidad=1)
+        service.asignar_material_a_voluntario(
+            db_session,
+            material_id=m.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoAsignacion.PRESTAMO,
+        )
+        destino = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.BORRADOR,
+        )
+        items, _ = service.listar_materiales_disponibles_para_servicio(
+            db_session, servicio_id=destino.id
+        )
+        assert m.id not in {mat.id for mat in items}
+
+    def test_servicio_inexistente_404(self, db_session):
+        with pytest.raises(service.ServicioNoEncontrado):
+            service.listar_materiales_disponibles_para_servicio(
+                db_session, servicio_id=uuid.uuid4()
+            )
+
+
+class TestEndpointDisponibleParaServicio:
+    BASE = "/api/v1/inventario"
+
+    def test_vehiculo_filtra_por_disponibilidad(
+        self, jefe_client, db_session, make_servicio, make_vehiculo
+    ):
+        ocupado = make_vehiculo(codigo_interno="VH-OCU")
+        libre = make_vehiculo(codigo_interno="VH-LIB")
+        bloqueante = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_vehiculo_a_servicio(
+            db_session, vehiculo_id=ocupado.id, servicio_id=bloqueante.id
+        )
+        destino = _servicio(
+            make_servicio,
+            inicio=datetime(2026, 6, 1, 12, 0),
+            fin=datetime(2026, 6, 1, 16, 0),
+            estado=EstadoServicio.BORRADOR,
+        )
+        r = jefe_client.get(
+            f"{self.BASE}/vehiculos",
+            params={"disponible_para_servicio": str(destino.id)},
+        )
+        assert r.status_code == 200
+        ids = {v["id"] for v in r.json()}
+        assert str(libre.id) in ids
+        assert str(ocupado.id) not in ids
+        assert r.headers["X-Total-Count"] == "1"
+
+    def test_material_filtra_por_disponibilidad(
+        self, jefe_client, db_session, make_servicio, make_material
+    ):
+        agotado = make_material(
+            nombre="Conos", tipo=TipoMaterial.SERVICIO, cantidad=2
+        )
+        con_stock = make_material(
+            nombre="Vallas", tipo=TipoMaterial.SERVICIO, cantidad=2
+        )
+        bloqueante = _servicio(
+            make_servicio, inicio=A_INI, fin=A_FIN,
+            estado=EstadoServicio.PUBLICADO,
+        )
+        service.asignar_material_a_servicio(
+            db_session, material_id=agotado.id, servicio_id=bloqueante.id,
+            cantidad=2,
+        )
+        destino = _servicio(
+            make_servicio,
+            inicio=datetime(2026, 6, 1, 12, 0),
+            fin=datetime(2026, 6, 1, 16, 0),
+            estado=EstadoServicio.BORRADOR,
+        )
+        r = jefe_client.get(
+            f"{self.BASE}/material",
+            params={"disponible_para_servicio": str(destino.id)},
+        )
+        assert r.status_code == 200
+        ids = {m["id"] for m in r.json()}
+        assert str(con_stock.id) in ids
+        assert str(agotado.id) not in ids
+        assert r.headers["X-Total-Count"] == "1"
+
+    def test_servicio_inexistente_es_404(self, jefe_client):
+        r = jefe_client.get(
+            f"{self.BASE}/vehiculos",
+            params={"disponible_para_servicio": str(uuid.uuid4())},
+        )
+        assert r.status_code == 404
+
+    def test_sin_param_mantiene_listado_normal(
+        self, jefe_client, make_vehiculo
+    ):
+        from app.models.material import EstadoInventario
+
+        make_vehiculo(codigo_interno="VH-OK")
+        make_vehiculo(
+            codigo_interno="VH-KO", estado=EstadoInventario.AVERIADO
+        )
+        # Sin el query param el listado normal NO filtra por estado: salen los 2.
+        r = jefe_client.get(f"{self.BASE}/vehiculos")
+        assert r.status_code == 200
+        assert r.headers["X-Total-Count"] == "2"
 
 
 # ---------------------------------------------------------------------------
