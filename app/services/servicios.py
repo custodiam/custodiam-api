@@ -407,16 +407,22 @@ def eliminar(session: Session, servicio_id: uuid.UUID) -> None:
     Decisión del PO: el borrado SIEMPRE procede, sin bloqueos. Sirve para
     corregir errores de creación, así que arrastra en cascada todas las
     filas hijas. Las FKs a ``servicios.id`` (inscripciones, fichajes,
-    asignaciones) no tienen ON DELETE CASCADE, de modo que hay que borrarlas
-    explícitamente antes del DELETE del servicio o el motor lo rechaza.
+    asignaciones y notificaciones) no tienen ON DELETE CASCADE, de modo que
+    hay que borrarlas explícitamente antes del DELETE del servicio o el motor
+    lo rechaza.
 
-    Orden del arrastre:
+    El borrado es **atómico**: todas las operaciones se acumulan en una única
+    transacción que se confirma con un solo ``commit`` al final. Si cualquier
+    paso falla, ``rollback`` deshace todo y el servicio queda intacto (no se
+    dejan servicios «fantasma» a medio borrar, como ocurría cuando cada paso
+    confirmaba por separado). Orden del arrastre:
 
-    1. Liberar las asignaciones de inventario (devolver material/vehículos a
-       OPERATIVO) y luego borrar sus filas.
-    2. Borrar las inscripciones del servicio.
-    3. Borrar los fichajes del servicio (el PO acepta este arrastre).
-    4. Borrar el propio servicio.
+    1. Inventario: liberar los recursos (estado → OPERATIVO) y borrar sus
+       asignaciones.
+    2. Notificaciones de auditoría del servicio.
+    3. Inscripciones del servicio.
+    4. Fichajes del servicio (el PO acepta este arrastre).
+    5. El propio servicio.
 
     El audit log del voluntario (``voluntario_eventos``) NO se toca: guarda
     el ``servicio_id`` dentro del payload JSON, sin FK a ``servicios.id``, de
@@ -430,20 +436,24 @@ def eliminar(session: Session, servicio_id: uuid.UUID) -> None:
     from app.repositories import fichajes as fichajes_repo
     from app.services import inventario as inventario_service
 
-    # 1. Inventario: liberar (estado → OPERATIVO) y luego borrar las filas.
-    inventario_service.liberar_asignaciones_de_servicio(
-        session, servicio_id=servicio_id, cuando=datetime.now()
-    )
-    inventario_service.eliminar_asignaciones_de_servicio(session, servicio_id)
-
-    # 2. Inscripciones.
-    repo.delete_inscripciones_de_servicio(session, servicio_id)
-
-    # 3. Fichajes (import diferido como en `cerrar`, evita circular).
-    fichajes_repo.delete_por_servicio(session, servicio_id)
-
-    # 4. El propio servicio.
-    repo.delete(session, servicio)
+    try:
+        # 1. Inventario: liberar (estado → OPERATIVO) y borrar las filas.
+        inventario_service.liberar_y_borrar_asignaciones_de_servicio(
+            session, servicio_id=servicio_id
+        )
+        # 2. Notificaciones de auditoría (la causa del FK violation/500).
+        repo.delete_notificaciones_de_servicio(session, servicio_id)
+        # 3. Inscripciones.
+        repo.delete_inscripciones_de_servicio(session, servicio_id)
+        # 4. Fichajes.
+        fichajes_repo.delete_por_servicio(session, servicio_id)
+        # 5. El propio servicio.
+        session.delete(servicio)
+        # Un único commit: o se borra todo o no se toca nada.
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------

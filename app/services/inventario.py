@@ -1144,20 +1144,40 @@ def contar_asignaciones_de_servicio(
     return repo.count_asignaciones_servicio(session, servicio_id)
 
 
-def eliminar_asignaciones_de_servicio(
-    session: Session, servicio_id: uuid.UUID
-) -> int:
-    """Borra las filas de asignación (material + vehículo) del servicio.
+def liberar_y_borrar_asignaciones_de_servicio(
+    session: Session, *, servicio_id: uuid.UUID
+) -> None:
+    """Para el borrado de un servicio: libera los recursos y borra sus filas.
 
-    Fachada del repositorio para el borrado en cascada de un servicio: las
-    FKs a ``servicios.id`` no tienen ON DELETE CASCADE, así que hay que
-    vaciar las asignaciones antes del DELETE del servicio. El borrado de
-    servicios libera primero los recursos (devolverlos a OPERATIVO con
-    :func:`liberar_asignaciones_de_servicio`) y luego invoca este borrado
-    para eliminar las filas. Devuelve el número de filas borradas.
+    A diferencia de :func:`liberar_asignaciones_de_servicio` (que se usa al
+    CERRAR un servicio y conserva las asignaciones como histórico sellando
+    ``fecha_devolucion``), aquí las filas se BORRAN porque el servicio entero
+    desaparece. Cada recurso que se quede sin ninguna asignación activa y
+    estuviera ``EN_USO`` vuelve a ``OPERATIVO``.
+
+    NO hace commit: forma parte de la transacción única del borrado del
+    servicio (un solo commit en :func:`app.services.servicios.eliminar`).
     """
 
-    return repo.delete_asignaciones_de_servicio(session, servicio_id)
+    material_ids, vehiculo_ids = repo.delete_asignaciones_de_servicio(
+        session, servicio_id
+    )
+    # Tras el flush del repo, los recuentos ya no ven las filas borradas.
+    for material_id in material_ids:
+        material = repo.get_material(session, material_id)
+        if material is None or material.estado != EstadoInventario.EN_USO:
+            continue
+        if repo.count_unidades_asignadas_material(session, material_id) == 0:
+            material.estado = EstadoInventario.OPERATIVO
+            session.add(material)
+    for vehiculo_id in vehiculo_ids:
+        vehiculo = repo.get_vehiculo(session, vehiculo_id)
+        if vehiculo is None or vehiculo.estado != EstadoInventario.EN_USO:
+            continue
+        # Un vehículo solo tiene una asignación activa a la vez (regla de
+        # negocio): al borrar la del servicio queda libre.
+        vehiculo.estado = EstadoInventario.OPERATIVO
+        session.add(vehiculo)
 
 
 # ---------------------------------------------------------------------------

@@ -199,6 +199,171 @@ class TestEliminar:
         vehiculo_tras = inv_service.obtener_vehiculo(db_session, vehiculo.id)
         assert vehiculo_tras.estado == EstadoInventario.OPERATIVO
 
+    def test_eliminar_con_notificacion_borra_igualmente(
+        self, db_session, servicio_borrador
+    ):
+        """Regresión: un servicio con una notificación de auditoría asociada
+        debe poder borrarse.
+
+        Cualquier convocatoria o publicación deja una fila en
+        ``notificaciones`` con ``servicio_id``. Como esa FK no tiene
+        ON DELETE CASCADE, el borrado debe arrastrar también esa tabla antes
+        del DELETE del servicio; de lo contrario PostgreSQL lo rechaza con un
+        IntegrityError (el 500 «error de servidor» reportado en producción).
+        """
+
+        from sqlmodel import func, select
+
+        from app.models.notificacion import (
+            Notificacion,
+            PrioridadNotificacion,
+            TipoNotificacion,
+        )
+        from app.repositories import dispositivos as notif_repo
+        from app.repositories import servicios as repo
+
+        notif_repo.crear_notificacion(
+            db_session,
+            tipo=TipoNotificacion.SERVICIO,
+            prioridad=PrioridadNotificacion.NORMAL,
+            titulo="Convocatoria de prueba",
+            cuerpo="Te han convocado al servicio",
+            servicio_id=servicio_borrador.id,
+        )
+
+        service.eliminar(db_session, servicio_borrador.id)
+
+        assert repo.get(db_session, servicio_borrador.id) is None
+        # Las notificaciones del servicio se arrastran: no quedan huérfanas.
+        restantes = db_session.exec(
+            select(func.count()).where(
+                Notificacion.servicio_id == servicio_borrador.id
+            )
+        ).one()
+        assert restantes == 0
+
+    def test_eliminar_arrastra_todo_incluida_notificacion(
+        self,
+        db_session,
+        make_servicio,
+        make_vehiculo,
+        make_material,
+        voluntario,
+    ):
+        """Escenario completo de producción: un servicio convocado con
+        notificación, material, vehículo, inscripción y fichaje se borra de
+        una vez sin dejar ninguna fila hija ni recurso bloqueado."""
+
+        from sqlmodel import func, select
+
+        from app.models.material import EstadoInventario, TipoMaterial
+        from app.models.notificacion import (
+            Notificacion,
+            PrioridadNotificacion,
+            TipoNotificacion,
+        )
+        from app.repositories import dispositivos as notif_repo
+        from app.repositories import fichajes as fichajes_repo
+        from app.repositories import servicios as repo
+        from app.services import inventario as inv_service
+
+        servicio = make_servicio(estado=EstadoServicio.ACTIVO)
+
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 7, 1, 9, 0),
+        )
+        fichajes_repo.create(
+            db_session,
+            data=dict(
+                servicio_id=servicio.id,
+                voluntario_id=voluntario.id,
+                hora_entrada=datetime(2026, 7, 1, 9, 0),
+                hora_salida=None,
+                automatico=False,
+            ),
+        )
+
+        material = make_material(tipo=TipoMaterial.SERVICIO, cantidad=5)
+        inv_service.asignar_material_a_servicio(
+            db_session,
+            material_id=material.id,
+            servicio_id=servicio.id,
+            cantidad=1,
+        )
+        vehiculo = make_vehiculo()
+        inv_service.asignar_vehiculo_a_servicio(
+            db_session,
+            vehiculo_id=vehiculo.id,
+            servicio_id=servicio.id,
+        )
+
+        notif_repo.crear_notificacion(
+            db_session,
+            tipo=TipoNotificacion.SERVICIO,
+            prioridad=PrioridadNotificacion.ALTA,
+            titulo="Convocatoria",
+            cuerpo="Te han convocado",
+            servicio_id=servicio.id,
+        )
+
+        service.eliminar(db_session, servicio.id)
+
+        assert repo.get(db_session, servicio.id) is None
+        assert repo.count_inscripciones(db_session, servicio.id) == 0
+        assert (
+            inv_service.contar_asignaciones_de_servicio(db_session, servicio.id)
+            == 0
+        )
+        assert fichajes_repo.list_por_servicio(db_session, servicio.id) == []
+        restantes_notif = db_session.exec(
+            select(func.count()).where(Notificacion.servicio_id == servicio.id)
+        ).one()
+        assert restantes_notif == 0
+        # El vehículo queda liberado (OPERATIVO), no bloqueado.
+        assert (
+            inv_service.obtener_vehiculo(db_session, vehiculo.id).estado
+            == EstadoInventario.OPERATIVO
+        )
+
+    def test_eliminar_es_atomico_si_un_paso_falla(
+        self, db_session, make_servicio, voluntario, monkeypatch
+    ):
+        """Atomicidad: si un paso intermedio del borrado falla, se revierte
+        TODO y el servicio queda intacto.
+
+        Antes cada paso confirmaba por separado, así que un fallo dejaba el
+        servicio sin sus hijos pero sin borrar (un «fantasma»). Ahora el
+        borrado es una única transacción: o se completa entero o no toca nada.
+        """
+
+        from app.repositories import fichajes as fichajes_repo
+        from app.repositories import servicios as repo
+
+        servicio = make_servicio(estado=EstadoServicio.ACTIVO)
+        repo.upsert_inscripcion(
+            db_session,
+            servicio_id=servicio.id,
+            voluntario_id=voluntario.id,
+            tipo=TipoInscripcion.INSCRITO,
+            fecha=datetime(2026, 7, 1, 9, 0),
+        )
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("fallo simulado a mitad del borrado")
+
+        monkeypatch.setattr(fichajes_repo, "delete_por_servicio", _boom)
+
+        with pytest.raises(RuntimeError):
+            service.eliminar(db_session, servicio.id)
+
+        # Nada se borró: el servicio y su inscripción siguen intactos.
+        assert repo.get(db_session, servicio.id) is not None
+        assert repo.count_inscripciones(db_session, servicio.id) == 1
+
 
 # ---------------------------------------------------------------------------
 # Máquina de estados (EN-03-03)
