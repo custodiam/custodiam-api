@@ -235,6 +235,21 @@ def list_asignaciones_activas_servicio_material(
     return list(session.exec(stmt).all())
 
 
+def count_asignaciones_servicio(session: Session, servicio_id: uuid.UUID) -> int:
+    """Cuenta TODAS las asignaciones (material + vehículo, activas o no) que
+    referencian al servicio. Soporta la guarda de borrado de servicios:
+    cualquier fila viva impediría el DELETE por la FK ``servicios.id`` (sin
+    ON DELETE CASCADE)."""
+
+    mat = session.exec(
+        select(func.count()).where(AsignacionMaterial.servicio_id == servicio_id)
+    ).one()
+    veh = session.exec(
+        select(func.count()).where(AsignacionVehiculo.servicio_id == servicio_id)
+    ).one()
+    return int(mat) + int(veh)
+
+
 def create_asignacion_material(
     session: Session, data: dict[str, Any]
 ) -> AsignacionMaterial:

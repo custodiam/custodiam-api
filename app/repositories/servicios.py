@@ -151,6 +151,23 @@ def set_estado(
     return servicio
 
 
+def count_inscripciones(session: Session, servicio_id: uuid.UUID) -> int:
+    """Número de inscripciones (de cualquier tipo) del servicio."""
+
+    stmt = select(func.count()).where(
+        InscripcionServicio.servicio_id == servicio_id
+    )
+    return int(session.exec(stmt).one())
+
+
+def delete(session: Session, servicio: Servicio) -> None:
+    """Borrado físico del servicio. El Service valida antes que no tenga
+    dependencias (inscripciones, fichajes, asignaciones); aquí solo borra."""
+
+    session.delete(servicio)
+    session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Inscripciones
 # ---------------------------------------------------------------------------
