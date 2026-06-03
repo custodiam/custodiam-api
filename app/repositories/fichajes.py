@@ -97,6 +97,9 @@ def delete_por_servicio(session: Session, servicio_id: uuid.UUID) -> int:
     vaciar los fichajes antes del DELETE del servicio. El PO acepta que el
     borrado de un servicio arrastre sus fichajes (el borrado corrige
     errores de creación). Devuelve el número de filas borradas.
+
+    NO hace commit: el borrado del servicio es una única transacción atómica
+    (un solo commit en :func:`app.services.servicios.eliminar`).
     """
 
     fichajes = list(
@@ -106,7 +109,7 @@ def delete_por_servicio(session: Session, servicio_id: uuid.UUID) -> int:
     )
     for fichaje in fichajes:
         session.delete(fichaje)
-    session.commit()
+    session.flush()
     return len(fichajes)
 
 
