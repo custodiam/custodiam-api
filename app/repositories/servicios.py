@@ -160,14 +160,6 @@ def count_inscripciones(session: Session, servicio_id: uuid.UUID) -> int:
     return int(session.exec(stmt).one())
 
 
-def delete(session: Session, servicio: Servicio) -> None:
-    """Borrado físico del servicio. El Service valida antes que no tenga
-    dependencias (inscripciones, fichajes, asignaciones); aquí solo borra."""
-
-    session.delete(servicio)
-    session.commit()
-
-
 # ---------------------------------------------------------------------------
 # Inscripciones
 # ---------------------------------------------------------------------------
@@ -243,6 +235,10 @@ def delete_inscripciones_de_servicio(
     ``inscripciones.servicio_id`` no tiene ON DELETE CASCADE, así que hay
     que vaciar las filas antes del DELETE del servicio. Devuelve el número
     de filas borradas.
+
+    NO hace commit: el borrado del servicio es una única transacción atómica
+    (un solo commit en :func:`app.services.servicios.eliminar`). Se usa
+    ``flush`` para que el motor emita los DELETE dentro de esa transacción.
     """
 
     inscripciones = list(
@@ -254,8 +250,35 @@ def delete_inscripciones_de_servicio(
     )
     for inscripcion in inscripciones:
         session.delete(inscripcion)
-    session.commit()
+    session.flush()
     return len(inscripciones)
+
+
+def delete_notificaciones_de_servicio(
+    session: Session, servicio_id: uuid.UUID
+) -> int:
+    """Borra TODAS las notificaciones de auditoría asociadas al servicio.
+
+    Cualquier convocatoria o publicación deja una fila en ``notificaciones``
+    con ``servicio_id`` (audit log de envíos). Esa FK no tiene ON DELETE
+    CASCADE, así que hay que vaciarla antes del DELETE del servicio o el
+    motor lo rechaza (la causa del 500 en producción). Decisión del PO: el
+    borrado de un servicio arrastra también sus notificaciones (el audit de
+    eventos del voluntario, sin FK, se conserva). NO hace commit: forma parte
+    de la transacción única del borrado. Devuelve el número de filas borradas.
+    """
+
+    from app.models.notificacion import Notificacion
+
+    notificaciones = list(
+        session.exec(
+            select(Notificacion).where(Notificacion.servicio_id == servicio_id)
+        ).all()
+    )
+    for notificacion in notificaciones:
+        session.delete(notificacion)
+    session.flush()
+    return len(notificaciones)
 
 
 def list_voluntarios_por_servicio(

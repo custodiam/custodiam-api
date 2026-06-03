@@ -387,15 +387,19 @@ def count_asignaciones_servicio(session: Session, servicio_id: uuid.UUID) -> int
 
 def delete_asignaciones_de_servicio(
     session: Session, servicio_id: uuid.UUID
-) -> int:
+) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
     """Borra TODAS las filas de asignación (material + vehículo) del servicio.
 
     Soporta el borrado en cascada del servicio (las FKs a ``servicios.id``
     no tienen ON DELETE CASCADE, así que hay que vaciarlas explícitamente
-    antes del DELETE del servicio). Devuelve el número de filas borradas
-    para que el llamante pueda registrarlo o verificarlo. El Service libera
-    primero las asignaciones (devolver el recurso a OPERATIVO) y solo
-    después invoca este borrado.
+    antes del DELETE del servicio). Devuelve ``(material_ids, vehiculo_ids)``
+    de los recursos que estaban asignados, para que el Service pueda liberar
+    su estado (volver a OPERATIVO los que se queden sin uso).
+
+    NO hace commit: el borrado del servicio es una única transacción atómica
+    (un solo commit en :func:`app.services.servicios.eliminar`). El ``flush``
+    emite los DELETE para que los recuentos posteriores no vean ya estas
+    filas.
     """
 
     materiales = list(
@@ -412,10 +416,12 @@ def delete_asignaciones_de_servicio(
             )
         ).all()
     )
+    material_ids = {a.material_id for a in materiales}
+    vehiculo_ids = {a.vehiculo_id for a in vehiculos}
     for asignacion in (*materiales, *vehiculos):
         session.delete(asignacion)
-    session.commit()
-    return len(materiales) + len(vehiculos)
+    session.flush()
+    return material_ids, vehiculo_ids
 
 
 def create_asignacion_material(
