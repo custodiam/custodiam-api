@@ -896,6 +896,11 @@ def asignar_material_servicio(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Servicio no encontrado: {e}",
         ) from e
+    except service.ServicioCerrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except service.MaterialNoOperativo as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -949,6 +954,11 @@ def asignar_vehiculo_servicio(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Servicio no encontrado: {e}",
+        ) from e
+    except service.ServicioCerrado as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
         ) from e
     except service.VehiculoOcupado as e:
         raise HTTPException(

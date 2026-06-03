@@ -36,6 +36,7 @@ Excepciones de dominio
 - :class:`TipoAsignacionNoCompatible` → 409
 - :class:`EstadoIncidenciaInvalido` → 422 (payload inválido)
 - :class:`MaterialEnEstadoFinal` → 409
+- :class:`ServicioCerrado` → 409 (no se asignan recursos a servicios cerrados)
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ from sqlmodel import Session
 from app.models.asignacion_material import AsignacionMaterial, TipoAsignacion
 from app.models.asignacion_vehiculo import AsignacionVehiculo
 from app.models.material import EstadoInventario, Material, TipoMaterial
-from app.models.servicio import Servicio, TipoServicio
+from app.models.servicio import EstadoServicio, Servicio, TipoServicio
 from app.models.vehiculo import Vehiculo
 from app.repositories import inventario as repo
 from app.repositories import servicios as servicios_repo
@@ -87,6 +88,10 @@ class AsignacionNoEncontrada(InventarioError):  # noqa: N818 — castellano
 
 class ServicioNoEncontrado(InventarioError):  # noqa: N818 — castellano
     """El servicio destino de la asignación no existe."""
+
+
+class ServicioCerrado(InventarioError):  # noqa: N818 — castellano
+    """El servicio destino está CERRADO y no admite nuevas asignaciones."""
 
 
 class MaterialNoOperativo(InventarioError):  # noqa: N818 — castellano
@@ -646,6 +651,10 @@ def asignar_material_a_servicio(
     _validar_compatibilidad_tipo(material, TipoAsignacion.SERVICIO)
 
     servicio = _obtener_servicio(session, servicio_id)
+    if servicio.estado == EstadoServicio.CERRADO:
+        raise ServicioCerrado(
+            f"el servicio {servicio_id} está cerrado; no admite asignaciones"
+        )
 
     # Unidades comprometidas globalmente fuera de servicio (sin intervalo).
     comprometidas_no_servicio = repo.count_unidades_asignadas_material(
@@ -905,6 +914,10 @@ def asignar_vehiculo_a_servicio(
 
     vehiculo = obtener_vehiculo(session, vehiculo_id)
     servicio = _obtener_servicio(session, servicio_id)
+    if servicio.estado == EstadoServicio.CERRADO:
+        raise ServicioCerrado(
+            f"el servicio {servicio_id} está cerrado; no admite asignaciones"
+        )
 
     if vehiculo.estado in (EstadoInventario.AVERIADO, EstadoInventario.PERDIDO):
         raise VehiculoNoOperativo(
