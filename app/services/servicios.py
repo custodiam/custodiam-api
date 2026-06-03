@@ -202,6 +202,33 @@ def listar_voluntarios(
     return repo.list_voluntarios_por_servicio(session, servicio_id)
 
 
+def tipo_inscripcion_de_keycloak_id(
+    session: Session,
+    *,
+    servicio_id: uuid.UUID,
+    keycloak_id: str,
+) -> TipoInscripcion | None:
+    """Tipo de inscripción del usuario actual en un servicio (lectura suave).
+
+    Resuelve el voluntario a partir del ``sub`` del JWT y devuelve el
+    ``tipo`` de su inscripción en el servicio, o ``None`` si la cuenta de
+    Keycloak no está vinculada a un voluntario en BD o el voluntario no
+    está inscrito. A diferencia del flujo de inscripción/baja, aquí la
+    ausencia de voluntario NO es un error: el detalle del servicio se
+    sirve igual, solo que con ``estoy_inscrito=False``.
+    """
+
+    from app.repositories import voluntarios as voluntarios_repo
+
+    voluntario = voluntarios_repo.get_by_keycloak_id(session, keycloak_id)
+    if voluntario is None:
+        return None
+    inscripcion = repo.get_inscripcion(
+        session, servicio_id=servicio_id, voluntario_id=voluntario.id
+    )
+    return inscripcion.tipo if inscripcion is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Escrituras del propio servicio
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ BASE = "/api/v1/inventario"
         ("get", f"{BASE}/material/{uuid.uuid4()}"),
         ("post", f"{BASE}/material"),
         ("patch", f"{BASE}/material/{uuid.uuid4()}"),
+        ("delete", f"{BASE}/material/{uuid.uuid4()}"),
         ("post", f"{BASE}/material/{uuid.uuid4()}/incidencia"),
         ("post", f"{BASE}/material/{uuid.uuid4()}/reparar"),
         ("post", f"{BASE}/material/{uuid.uuid4()}/asignar"),
@@ -29,6 +30,7 @@ BASE = "/api/v1/inventario"
         ("get", f"{BASE}/vehiculos/{uuid.uuid4()}"),
         ("post", f"{BASE}/vehiculos"),
         ("patch", f"{BASE}/vehiculos/{uuid.uuid4()}"),
+        ("delete", f"{BASE}/vehiculos/{uuid.uuid4()}"),
         ("post", f"{BASE}/vehiculos/{uuid.uuid4()}/incidencia"),
         ("post", f"{BASE}/vehiculos/{uuid.uuid4()}/reparar"),
         ("get", f"{BASE}/vehiculos/{uuid.uuid4()}/dotacion"),
@@ -152,6 +154,43 @@ class TestMaterialPatch:
         r = c.patch(
             f"{BASE}/material/{uuid.uuid4()}", json={"ubicacion_base": "x"}
         )
+        assert r.status_code == 404
+
+
+class TestMaterialDelete:
+    def test_borrar_sin_asignaciones_es_204(self, client_for_role, material):
+        # jefe_equipo tiene `inventario.registrar_material` (mismo permiso
+        # que el PATCH de material).
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/material/{material.id}")
+        assert r.status_code == 204
+        # Tras borrar, el GET de detalle da 404.
+        assert c.get(f"{BASE}/material/{material.id}").status_code == 404
+
+    def test_borrar_como_voluntario_basico_es_403(
+        self, authenticated_client, material
+    ):
+        r = authenticated_client.delete(f"{BASE}/material/{material.id}")
+        assert r.status_code == 403
+
+    def test_borrar_con_asignacion_es_409(
+        self, client_for_role, servicio_publicado, make_material
+    ):
+        from app.models.material import TipoMaterial
+
+        c = client_for_role(["jefe_equipo"])
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=10)
+        asignado = c.post(
+            f"/api/v1/servicios/{servicio_publicado.id}/inventario/material",
+            json={"material_id": str(m.id), "cantidad": 2},
+        )
+        assert asignado.status_code == 201
+        r = c.delete(f"{BASE}/material/{m.id}")
+        assert r.status_code == 409
+
+    def test_borrar_inexistente_es_404(self, client_for_role):
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/material/{uuid.uuid4()}")
         assert r.status_code == 404
 
 
@@ -410,6 +449,46 @@ class TestVehiculos:
         assert r.json()["estado"] == "averiado"
 
 
+class TestVehiculoDelete:
+    def test_borrar_sin_asignaciones_es_204(self, client_for_role, vehiculo):
+        # jefe_unidad tiene `inventario.registrar_vehiculo` (mismo permiso
+        # que el PATCH de vehículo).
+        c = client_for_role(["jefe_unidad"])
+        r = c.delete(f"{BASE}/vehiculos/{vehiculo.id}")
+        assert r.status_code == 204
+        assert c.get(f"{BASE}/vehiculos/{vehiculo.id}").status_code == 404
+
+    def test_borrar_como_voluntario_basico_es_403(
+        self, authenticated_client, vehiculo
+    ):
+        r = authenticated_client.delete(f"{BASE}/vehiculos/{vehiculo.id}")
+        assert r.status_code == 403
+
+    def test_borrar_como_jefe_equipo_es_403(self, client_for_role, vehiculo):
+        # jefe_equipo NO tiene `inventario.registrar_vehiculo` (decisión 9 RBAC).
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(f"{BASE}/vehiculos/{vehiculo.id}")
+        assert r.status_code == 403
+
+    def test_borrar_con_asignacion_es_409(
+        self, client_for_role, servicio_publicado, vehiculo
+    ):
+        # jefe_unidad tiene tanto `registrar_vehiculo` como `asignar_a_servicio`.
+        c = client_for_role(["jefe_unidad"])
+        asignado = c.post(
+            f"/api/v1/servicios/{servicio_publicado.id}/inventario/vehiculo",
+            json={"vehiculo_id": str(vehiculo.id)},
+        )
+        assert asignado.status_code == 201
+        r = c.delete(f"{BASE}/vehiculos/{vehiculo.id}")
+        assert r.status_code == 409
+
+    def test_borrar_inexistente_es_404(self, client_for_role):
+        c = client_for_role(["jefe_unidad"])
+        r = c.delete(f"{BASE}/vehiculos/{uuid.uuid4()}")
+        assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # Asignar a servicio (CU-22)
 # ---------------------------------------------------------------------------
@@ -529,10 +608,16 @@ class TestListarInventarioServicio:
         r = jefe_client.get(self._path(uuid.uuid4()))
         assert r.status_code == 404
 
-    def test_voluntario_basico_no_puede_ver(self, authenticated_client):
-        # voluntario básico NO tiene `inventario.ver`.
-        r = authenticated_client.get(self._path(uuid.uuid4()))
-        assert r.status_code == 403
+    def test_voluntario_basico_puede_ver_recursos_de_servicio_publicado(
+        self, authenticated_client, servicio_publicado
+    ):
+        # B5: la lectura de recursos del propio servicio se gatea por
+        # `servicios.ver_publicados` (que el voluntario raso tiene), NO por
+        # `inventario.ver`. Un voluntario inscrito ve qué lleva su servicio
+        # sin acceder al inventario global.
+        r = authenticated_client.get(self._path(servicio_publicado.id))
+        assert r.status_code == 200
+        assert r.json() == {"material": [], "vehiculos": []}
 
 
 # ---------------------------------------------------------------------------
