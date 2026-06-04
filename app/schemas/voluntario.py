@@ -13,8 +13,9 @@ del voluntario, ver los módulos hermanos:
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.validators import fecha_no_futura
 from app.models.voluntario import EstadoVoluntario
 from app.schemas.acreditacion import AcreditacionResponse
 from app.schemas.contacto_emergencia import ContactoEmergenciaResponse
@@ -46,6 +47,18 @@ class VoluntarioCreate(VoluntarioBase):
 
     El `estado` se fija a `ACTIVO` por defecto en el modelo.
     """
+
+    # Email OBLIGATORIO en el alta: es la llave del onboarding, ya que el
+    # voluntario recibe en él la invitación de Keycloak para establecer su
+    # contraseña. Se sobrescribe aquí (en `VoluntarioBase` es opcional
+    # porque `VoluntarioResponse` y los schemas de update lo heredan y
+    # deben tolerar valores nulos de voluntarios anteriores).
+    email: EmailStr
+
+    @field_validator("fecha_nacimiento")
+    @classmethod
+    def _fecha_nacimiento_no_futura(cls, v: date) -> date:
+        return fecha_no_futura(v)
 
 
 class VoluntarioUpdateAdmin(BaseModel):

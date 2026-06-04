@@ -52,6 +52,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                 "telefono": "+34622222222",
                 "municipio": "Zaragoza",
                 "fecha_nacimiento": "1990-01-01",
+                "email": "beatriz@example.com",
             },
         )
         assert r.status_code == 201
@@ -93,6 +94,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                     "municipio": "Zaragoza",
                     "fecha_nacimiento": "1990-01-01",
                     "dni": "99999999X",
+                    "email": "diana.falla@example.com",
                 },
             )
             assert r.status_code == 502
@@ -109,6 +111,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                     "municipio": "Zaragoza",
                     "fecha_nacimiento": "1990-01-01",
                     "dni": "99999999X",
+                    "email": "diana.falla@example.com",
                 },
             )
             assert r2.status_code == 201
@@ -128,6 +131,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                 "municipio": "Zaragoza",
                 "fecha_nacimiento": "1990-01-01",
                 "dni": "44444444X",
+                "email": "repetida@example.com",
             },
         )
         assert r.status_code == 409

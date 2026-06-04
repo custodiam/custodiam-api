@@ -183,6 +183,11 @@ class TestCrear:
             fecha_nacimiento="1995-05-15",
         )
         base.update(overrides)
+        # Email obligatorio en el alta; derivado del nombre para que dos
+        # payloads con nombres distintos no choquen con el UNIQUE de email.
+        base.setdefault(
+            "email", f"{base['nombre'].replace(' ', '.').lower()}@example.com"
+        )
         return base
 
     def test_alta_como_admin_devuelve_201_y_ficha(self, admin_client):
@@ -390,6 +395,7 @@ class TestMatrizRbacResumida:
                 "telefono": "+34611111111",
                 "municipio": "Zaragoza",
                 "fecha_nacimiento": "1990-01-01",
+                "email": "nueva.persona@example.com",
             },
         )
         assert r.status_code == 201
