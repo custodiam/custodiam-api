@@ -451,6 +451,26 @@ class TestReenviarInvitacion:
         r = authenticated_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
         assert r.status_code == 403
 
+    def test_reenviar_con_admin_api_deshabilitada_es_503(
+        self, admin_client, make_voluntario
+    ):
+        from app.main import app
+        from app.services.keycloak_admin import get_keycloak_admin
+        from tests.conftest import FakeKeycloakAdmin
+
+        class _Disabled(FakeKeycloakAdmin):
+            @property
+            def enabled(self) -> bool:  # type: ignore[override]
+                return False
+
+        v = make_voluntario(keycloak_id="kc-inv-4", email="dis@example.com")
+        app.dependency_overrides[get_keycloak_admin] = lambda: _Disabled()
+        try:
+            r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+            assert r.status_code == 503
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
 
 # ---------------------------------------------------------------------------
 # EN-02-05: asignación / baja de roles

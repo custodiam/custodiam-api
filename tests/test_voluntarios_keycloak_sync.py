@@ -216,6 +216,71 @@ class TestAltaOnboarding:
         finally:
             app.dependency_overrides.pop(get_keycloak_admin, None)
 
+    def test_alta_persiste_rol_inicial_en_bd(self, admin_client):
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        vol_id = r.json()["id"]
+        roles = admin_client.get(f"{BASE}/{vol_id}/roles")
+        assert roles.status_code == 200
+        nombres = {item["rol_nombre"] for item in roles.json()}
+        assert "voluntario_practicas" in nombres
+
+    def test_alta_con_rol_ausente_del_catalogo_sigue_201_sin_rol_en_bd(
+        self, admin_client, fake_keycloak_admin, monkeypatch
+    ):
+        from app.routers import voluntarios as router_mod
+
+        # El rol inicial no existe en el catálogo BD → paso 5 best-effort.
+        monkeypatch.setattr(
+            router_mod.service, "ROL_INICIAL_PRACTICAS", "rol_inexistente_xyz"
+        )
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        # En Keycloak sí se asignó (paso 3 usa la misma constante parcheada).
+        kc_id = r.json()["keycloak_id"]
+        assert (kc_id, "rol_inexistente_xyz") in fake_keycloak_admin.roles_asignados
+        # En BD queda sin rol registrado (degradación elegante, no 500).
+        roles = admin_client.get(f"{BASE}/{r.json()['id']}/roles")
+        assert roles.status_code == 200
+        assert roles.json() == []
+
+    def test_alta_con_409_de_bd_compensa_el_usuario_kc(
+        self, admin_client, fake_keycloak_admin, monkeypatch
+    ):
+        from app.routers import voluntarios as router_mod
+
+        # Simula la carrera TOCTOU: el pre-check pasa pero service.crear
+        # detecta el email duplicado al persistir.
+        def _boom(*args, **kwargs):
+            raise router_mod.service.EmailDuplicado("repe@example.com")
+
+        monkeypatch.setattr(router_mod.service, "crear", _boom)
+        r = self._alta(admin_client)
+        assert r.status_code == 409
+        # El usuario KC creado (con rol) se compensó desactivándolo.
+        assert len(fake_keycloak_admin.usuarios_creados) == 1
+        assert fake_keycloak_admin.usuarios_desactivados == [
+            fake_keycloak_admin.usuarios_creados[0]["id"]
+        ]
+
+    def test_alta_con_integrityerror_en_commit_es_409_y_compensa(
+        self, admin_client, fake_keycloak_admin, monkeypatch
+    ):
+        from sqlalchemy.exc import IntegrityError
+
+        from app.routers import voluntarios as router_mod
+
+        def _boom(*args, **kwargs):
+            raise IntegrityError("INSERT ...", {}, Exception("unique violation"))
+
+        monkeypatch.setattr(router_mod.service, "crear", _boom)
+        r = self._alta(admin_client)
+        # IntegrityError del commit se traduce a 409 (no 500) y se compensa.
+        assert r.status_code == 409
+        assert fake_keycloak_admin.usuarios_desactivados == [
+            fake_keycloak_admin.usuarios_creados[0]["id"]
+        ]
+
 
 # ---------------------------------------------------------------------------
 # DELETE /voluntarios/{id}  (soft delete + desactivar en KC)

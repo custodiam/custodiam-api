@@ -17,6 +17,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.core.database import get_session
@@ -155,6 +156,24 @@ def actualizar_mi_perfil(
 # ---------------------------------------------------------------------------
 
 
+def _compensar_kc(kc_admin: KeycloakAdminClient, keycloak_id: str | None) -> None:
+    """Best-effort: desactiva el usuario Keycloak recién creado cuando un
+    paso posterior del alta falla, para no dejar una cuenta huérfana (con
+    o sin rol) que además bloquearía el reintento por username duplicado.
+    """
+
+    if not keycloak_id:
+        return
+    try:
+        kc_admin.desactivar_usuario(keycloak_id)
+    except KeycloakAdminError:
+        logger.warning(
+            "No se pudo compensar (desactivar) el usuario Keycloak %s tras "
+            "un fallo del alta",
+            keycloak_id,
+        )
+
+
 @router.post(
     "",
     response_model=VoluntarioResponse,
@@ -225,20 +244,17 @@ def crear_voluntario(
         try:
             kc_admin.asignar_rol_realm(keycloak_id, service.ROL_INICIAL_PRACTICAS)
         except KeycloakAdminError as e:
-            try:
-                kc_admin.desactivar_usuario(keycloak_id)
-            except KeycloakAdminError:
-                logger.warning(
-                    "No se pudo compensar (desactivar) el usuario Keycloak %s "
-                    "tras fallar la asignación del rol inicial",
-                    keycloak_id,
-                )
+            _compensar_kc(kc_admin, keycloak_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Sincronización con Keycloak fallida al asignar el rol inicial: {e}",
             ) from e
 
-    # 4. Persistencia en BD.
+    # 4. Persistencia en BD. Si falla aquí, el usuario ya existe en Keycloak
+    #    con su rol, así que compensamos desactivándolo para no dejar una
+    #    cuenta huérfana. El 409 secuencial lo intercepta el paso 1; el del
+    #    paso 4 solo se alcanza por carrera (TOCTOU) o por una violación de
+    #    UNIQUE que aflore en el commit (IntegrityError).
     try:
         v = service.crear(
             session,
@@ -247,14 +263,26 @@ def crear_voluntario(
             actor_keycloak_id=user.sub,
         )
     except service.DniDuplicado as e:
+        _compensar_kc(kc_admin, keycloak_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"DNI ya registrado: {e}",
         ) from e
     except service.EmailDuplicado as e:
+        _compensar_kc(kc_admin, keycloak_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Email ya registrado: {e}",
+        ) from e
+    except IntegrityError as e:
+        session.rollback()
+        _compensar_kc(kc_admin, keycloak_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Conflicto de unicidad al crear el voluntario "
+                "(DNI, email o cuenta ya existentes)."
+            ),
         ) from e
 
     # 5. Registrar el rol inicial en BD (coherencia con la ficha). El rol
@@ -328,6 +356,16 @@ def reenviar_invitacion(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="El voluntario no tiene email; no se puede enviar la invitación.",
+        )
+    # Este endpoint existe SOLO para enviar el correo, así que un no-op
+    # silencioso (Admin API sin configurar) sería engañoso: devolvemos 503.
+    if not kc_admin.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "La Admin API de Keycloak no está configurada; "
+                "no se puede reenviar la invitación."
+            ),
         )
     try:
         kc_admin.execute_actions_email(v.keycloak_id)
