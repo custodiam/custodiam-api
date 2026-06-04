@@ -341,6 +341,86 @@ class KeycloakAdminClient:
             )
         return None
 
+    # ------------------------------------------------------------------
+    # Onboarding: email de acciones (set-password)
+    # ------------------------------------------------------------------
+
+    # Acciones por defecto del email de invitación: verificar el correo y
+    # establecer la contraseña. El voluntario recién dado de alta no tiene
+    # contraseña, así que el enlace le lleva a fijarla en la web de Keycloak.
+    _DEFAULT_EMAIL_ACTIONS: tuple[str, ...] = ("VERIFY_EMAIL", "UPDATE_PASSWORD")
+
+    # Vigencia del enlace del email, en segundos (24 h).
+    _DEFAULT_EMAIL_LIFESPAN_SECONDS: int = 86_400
+
+    def execute_actions_email(
+        self,
+        keycloak_id: str,
+        *,
+        actions: list[str] | None = None,
+        client_id: str | None = None,
+        lifespan_seconds: int | None = None,
+    ) -> None:
+        """Envía al usuario el email de acciones requeridas (set-password).
+
+        Es la pieza del onboarding: el voluntario dado de alta recibe en su
+        correo un enlace para verificar el email y establecer su contraseña
+        en la web de Keycloak. ``client_id`` debe ser el cliente público de
+        la app (``settings.keycloak_authorized_party``) para que el enlace
+        de retorno apunte a Custodiam.
+
+        No-op si el cliente está deshabilitado. Lanza
+        :class:`KeycloakAdminError` si el usuario no existe (404) o ante
+        cualquier otra respuesta inesperada, para que el caller decida si
+        es bloqueante (reenvío manual) o no (alta best-effort).
+        """
+
+        if not self.enabled:
+            logger.debug(
+                "KeycloakAdminClient deshabilitado: omitiendo "
+                "execute_actions_email(%s)",
+                keycloak_id,
+            )
+            return None
+
+        acciones = actions if actions is not None else list(self._DEFAULT_EMAIL_ACTIONS)
+        cid = client_id or settings.keycloak_authorized_party
+        lifespan = (
+            lifespan_seconds
+            if lifespan_seconds is not None
+            else self._DEFAULT_EMAIL_LIFESPAN_SECONDS
+        )
+
+        token = self._get_admin_token()
+        url = (
+            f"{self._base_url}/admin/realms/{self._realm}/users/{keycloak_id}"
+            f"/execute-actions-email"
+        )
+
+        try:
+            response = self._http.put(
+                url,
+                params={"client_id": cid, "lifespan": lifespan},
+                json=acciones,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as e:
+            raise KeycloakAdminError(
+                f"Error de red al enviar el email de invitación en Keycloak: {e}"
+            ) from e
+
+        if response.status_code == 404:
+            raise KeycloakAdminError(
+                f"El usuario Keycloak {keycloak_id} no existe; "
+                "no se pudo enviar la invitación"
+            )
+        if response.status_code not in (200, 204):
+            raise KeycloakAdminError(
+                f"Keycloak rechazó el envío del email de invitación "
+                f"(HTTP {response.status_code}): {response.text}"
+            )
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Dependency FastAPI

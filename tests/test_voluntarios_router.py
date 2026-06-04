@@ -183,6 +183,11 @@ class TestCrear:
             fecha_nacimiento="1995-05-15",
         )
         base.update(overrides)
+        # Email obligatorio en el alta; derivado del nombre para que dos
+        # payloads con nombres distintos no choquen con el UNIQUE de email.
+        base.setdefault(
+            "email", f"{base['nombre'].replace(' ', '.').lower()}@example.com"
+        )
         return base
 
     def test_alta_como_admin_devuelve_201_y_ficha(self, admin_client):
@@ -390,6 +395,7 @@ class TestMatrizRbacResumida:
                 "telefono": "+34611111111",
                 "municipio": "Zaragoza",
                 "fecha_nacimiento": "1990-01-01",
+                "email": "nueva.persona@example.com",
             },
         )
         assert r.status_code == 201
@@ -407,6 +413,63 @@ class TestMatrizRbacResumida:
             == 403
         )
         assert c.delete(f"{BASE}/{voluntario.id}").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# POST /voluntarios/{id}/reenviar-invitacion (onboarding)
+# ---------------------------------------------------------------------------
+
+
+class TestReenviarInvitacion:
+    def test_reenviar_dispara_email(
+        self, admin_client, fake_keycloak_admin, make_voluntario
+    ):
+        v = make_voluntario(keycloak_id="kc-inv-1", email="inv@example.com")
+        r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 200
+        assert len(fake_keycloak_admin.emails_enviados) == 1
+        assert fake_keycloak_admin.emails_enviados[0]["keycloak_id"] == "kc-inv-1"
+
+    def test_reenviar_voluntario_inexistente_es_404(self, admin_client):
+        r = admin_client.post(f"{BASE}/{uuid.uuid4()}/reenviar-invitacion")
+        assert r.status_code == 404
+
+    def test_reenviar_sin_keycloak_id_es_409(self, admin_client, make_voluntario):
+        v = make_voluntario(keycloak_id=None, email="sinkc@example.com")
+        r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 409
+
+    def test_reenviar_sin_email_es_409(self, admin_client, make_voluntario):
+        v = make_voluntario(keycloak_id="kc-inv-2", email=None)
+        r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 409
+
+    def test_reenviar_como_voluntario_basico_es_403(
+        self, authenticated_client, make_voluntario
+    ):
+        v = make_voluntario(keycloak_id="kc-inv-3", email="vol@example.com")
+        r = authenticated_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 403
+
+    def test_reenviar_con_admin_api_deshabilitada_es_503(
+        self, admin_client, make_voluntario
+    ):
+        from app.main import app
+        from app.services.keycloak_admin import get_keycloak_admin
+        from tests.conftest import FakeKeycloakAdmin
+
+        class _Disabled(FakeKeycloakAdmin):
+            @property
+            def enabled(self) -> bool:  # type: ignore[override]
+                return False
+
+        v = make_voluntario(keycloak_id="kc-inv-4", email="dis@example.com")
+        app.dependency_overrides[get_keycloak_admin] = lambda: _Disabled()
+        try:
+            r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+            assert r.status_code == 503
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
 
 
 # ---------------------------------------------------------------------------

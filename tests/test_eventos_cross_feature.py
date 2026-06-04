@@ -50,6 +50,7 @@ class TestVoluntariosService:
             municipio="Zuera",
             fecha_nacimiento=datetime(1995, 4, 1).date(),
             dni="44444444D",
+            email="carla.ruiz@example.com",
         )
         voluntario = voluntarios_service.crear(
             db_session,

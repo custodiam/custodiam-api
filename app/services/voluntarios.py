@@ -270,6 +270,37 @@ def anonimizar(
 # ---------------------------------------------------------------------------
 
 
+# Rol que se asigna por defecto al dar de alta un voluntario (CU-10). Le
+# da los permisos operativos base; un mando lo promociona después. Sin un
+# rol el voluntario quedaría "mudo" (0 permisos, 403 en todo).
+ROL_INICIAL_PRACTICAS = "voluntario_practicas"
+
+
+def asignar_rol_por_nombre(
+    session: Session,
+    *,
+    voluntario_id: uuid.UUID,
+    nombre_rol: str,
+    actor_keycloak_id: str | None = None,
+):
+    """Asigna un rol del catálogo (buscado por nombre) al voluntario en BD.
+
+    Gemelo de :func:`asignar_rol` para los flujos que conocen el nombre
+    del rol pero no su id (p. ej. el rol inicial del alta). Lanza
+    :class:`RolNoEncontrado` si el nombre no está en el catálogo.
+    """
+
+    rol = repo.get_rol_por_nombre(session, nombre_rol)
+    if rol is None:
+        raise RolNoEncontrado(nombre_rol)
+    return asignar_rol(
+        session,
+        voluntario_id=voluntario_id,
+        rol_id=rol.id,
+        actor_keycloak_id=actor_keycloak_id,
+    )
+
+
 def asignar_rol(
     session: Session,
     *,

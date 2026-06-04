@@ -52,6 +52,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                 "telefono": "+34622222222",
                 "municipio": "Zaragoza",
                 "fecha_nacimiento": "1990-01-01",
+                "email": "beatriz@example.com",
             },
         )
         assert r.status_code == 201
@@ -93,6 +94,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                     "municipio": "Zaragoza",
                     "fecha_nacimiento": "1990-01-01",
                     "dni": "99999999X",
+                    "email": "diana.falla@example.com",
                 },
             )
             assert r.status_code == 502
@@ -109,6 +111,7 @@ class TestAltaCreaUsuarioEnKeycloak:
                     "municipio": "Zaragoza",
                     "fecha_nacimiento": "1990-01-01",
                     "dni": "99999999X",
+                    "email": "diana.falla@example.com",
                 },
             )
             assert r2.status_code == 201
@@ -128,10 +131,155 @@ class TestAltaCreaUsuarioEnKeycloak:
                 "municipio": "Zaragoza",
                 "fecha_nacimiento": "1990-01-01",
                 "dni": "44444444X",
+                "email": "repetida@example.com",
             },
         )
         assert r.status_code == 409
         assert fake_keycloak_admin.usuarios_creados == []
+
+
+class TestAltaOnboarding:
+    """El alta asigna el rol inicial en Keycloak y envía la invitación."""
+
+    def _alta(self, client):
+        return client.post(
+            BASE,
+            json={
+                "nombre": "Nora Onboarding",
+                "telefono": "+34666000111",
+                "municipio": "Zaragoza",
+                "fecha_nacimiento": "1992-03-03",
+                "email": "nora@example.com",
+            },
+        )
+
+    def test_alta_asigna_rol_inicial_voluntario_practicas(
+        self, admin_client, fake_keycloak_admin
+    ):
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        kc_id = r.json()["keycloak_id"]
+        assert (kc_id, "voluntario_practicas") in fake_keycloak_admin.roles_asignados
+
+    def test_alta_dispara_email_de_invitacion(
+        self, admin_client, fake_keycloak_admin
+    ):
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        kc_id = r.json()["keycloak_id"]
+        assert len(fake_keycloak_admin.emails_enviados) == 1
+        assert fake_keycloak_admin.emails_enviados[0]["keycloak_id"] == kc_id
+
+    def test_alta_con_fallo_de_rol_es_502_y_compensa_desactivando(self, admin_client):
+        from app.main import app
+        from tests.conftest import FakeKeycloakAdmin
+
+        fake = FakeKeycloakAdmin(fail_on={"rol"})
+        app.dependency_overrides[get_keycloak_admin] = lambda: fake
+        try:
+            r = self._alta(admin_client)
+            assert r.status_code == 502
+            # Rol bloqueante: se compensa desactivando el usuario recién creado.
+            assert len(fake.usuarios_creados) == 1
+            assert fake.usuarios_desactivados == [fake.usuarios_creados[0]["id"]]
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
+    def test_alta_con_fallo_de_rol_no_crea_en_bd(self, admin_client):
+        from app.main import app
+        from tests.conftest import FakeKeycloakAdmin
+
+        app.dependency_overrides[get_keycloak_admin] = lambda: FakeKeycloakAdmin(
+            fail_on={"rol"}
+        )
+        try:
+            assert self._alta(admin_client).status_code == 502
+            # Nada en BD: el reintento sin fallo (mismo email) crea sin 409.
+            app.dependency_overrides[get_keycloak_admin] = lambda: FakeKeycloakAdmin()
+            assert self._alta(admin_client).status_code == 201
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
+    def test_alta_con_fallo_de_email_no_revierte_el_alta(self, admin_client):
+        from app.main import app
+        from tests.conftest import FakeKeycloakAdmin
+
+        fake = FakeKeycloakAdmin(fail_on={"email"})
+        app.dependency_overrides[get_keycloak_admin] = lambda: fake
+        try:
+            r = self._alta(admin_client)
+            # El email es best-effort: el alta NO se revierte si falla.
+            assert r.status_code == 201
+            kc_id = r.json()["keycloak_id"]
+            assert (kc_id, "voluntario_practicas") in fake.roles_asignados
+            assert fake.emails_enviados == []
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
+    def test_alta_persiste_rol_inicial_en_bd(self, admin_client):
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        vol_id = r.json()["id"]
+        roles = admin_client.get(f"{BASE}/{vol_id}/roles")
+        assert roles.status_code == 200
+        nombres = {item["rol_nombre"] for item in roles.json()}
+        assert "voluntario_practicas" in nombres
+
+    def test_alta_con_rol_ausente_del_catalogo_sigue_201_sin_rol_en_bd(
+        self, admin_client, fake_keycloak_admin, monkeypatch
+    ):
+        from app.routers import voluntarios as router_mod
+
+        # El rol inicial no existe en el catálogo BD → paso 5 best-effort.
+        monkeypatch.setattr(
+            router_mod.service, "ROL_INICIAL_PRACTICAS", "rol_inexistente_xyz"
+        )
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        # En Keycloak sí se asignó (paso 3 usa la misma constante parcheada).
+        kc_id = r.json()["keycloak_id"]
+        assert (kc_id, "rol_inexistente_xyz") in fake_keycloak_admin.roles_asignados
+        # En BD queda sin rol registrado (degradación elegante, no 500).
+        roles = admin_client.get(f"{BASE}/{r.json()['id']}/roles")
+        assert roles.status_code == 200
+        assert roles.json() == []
+
+    def test_alta_con_409_de_bd_compensa_el_usuario_kc(
+        self, admin_client, fake_keycloak_admin, monkeypatch
+    ):
+        from app.routers import voluntarios as router_mod
+
+        # Simula la carrera TOCTOU: el pre-check pasa pero service.crear
+        # detecta el email duplicado al persistir.
+        def _boom(*args, **kwargs):
+            raise router_mod.service.EmailDuplicado("repe@example.com")
+
+        monkeypatch.setattr(router_mod.service, "crear", _boom)
+        r = self._alta(admin_client)
+        assert r.status_code == 409
+        # El usuario KC creado (con rol) se compensó desactivándolo.
+        assert len(fake_keycloak_admin.usuarios_creados) == 1
+        assert fake_keycloak_admin.usuarios_desactivados == [
+            fake_keycloak_admin.usuarios_creados[0]["id"]
+        ]
+
+    def test_alta_con_integrityerror_en_commit_es_409_y_compensa(
+        self, admin_client, fake_keycloak_admin, monkeypatch
+    ):
+        from sqlalchemy.exc import IntegrityError
+
+        from app.routers import voluntarios as router_mod
+
+        def _boom(*args, **kwargs):
+            raise IntegrityError("INSERT ...", {}, Exception("unique violation"))
+
+        monkeypatch.setattr(router_mod.service, "crear", _boom)
+        r = self._alta(admin_client)
+        # IntegrityError del commit se traduce a 409 (no 500) y se compensa.
+        assert r.status_code == 409
+        assert fake_keycloak_admin.usuarios_desactivados == [
+            fake_keycloak_admin.usuarios_creados[0]["id"]
+        ]
 
 
 # ---------------------------------------------------------------------------
