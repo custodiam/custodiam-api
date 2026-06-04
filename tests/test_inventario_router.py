@@ -560,6 +560,68 @@ class TestAsignarServicio:
         assert r.status_code == 403
 
 
+class TestQuitarServicio:
+    def _del_material(self, servicio_id, asignacion_id):
+        return (
+            f"/api/v1/servicios/{servicio_id}/inventario/material/{asignacion_id}"
+        )
+
+    def _del_vehiculo(self, servicio_id, asignacion_id):
+        return (
+            f"/api/v1/servicios/{servicio_id}/inventario/vehiculo/{asignacion_id}"
+        )
+
+    def test_quitar_material_de_servicio(
+        self, client_for_role, servicio_publicado, make_material
+    ):
+        from app.models.material import TipoMaterial
+
+        c = client_for_role(["jefe_equipo"])
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=10)
+        asignado = c.post(
+            f"/api/v1/servicios/{servicio_publicado.id}/inventario/material",
+            json={"material_id": str(m.id), "cantidad": 3},
+        ).json()
+
+        r = c.delete(self._del_material(servicio_publicado.id, asignado["id"]))
+        assert r.status_code == 204
+        # Borrada de verdad: un segundo intento ya no la encuentra.
+        r2 = c.delete(self._del_material(servicio_publicado.id, asignado["id"]))
+        assert r2.status_code == 404
+
+    def test_quitar_vehiculo_de_servicio(
+        self, client_for_role, servicio_publicado, vehiculo
+    ):
+        c = client_for_role(["jefe_equipo"])
+        asignado = c.post(
+            f"/api/v1/servicios/{servicio_publicado.id}/inventario/vehiculo",
+            json={"vehiculo_id": str(vehiculo.id)},
+        ).json()
+
+        r = c.delete(self._del_vehiculo(servicio_publicado.id, asignado["id"]))
+        assert r.status_code == 204
+
+    def test_quitar_inexistente_es_404(
+        self, client_for_role, servicio_publicado
+    ):
+        c = client_for_role(["jefe_equipo"])
+        r = c.delete(
+            self._del_material(servicio_publicado.id, uuid.uuid4())
+        )
+        assert r.status_code == 404
+
+    def test_secretario_no_puede_quitar(
+        self, client_for_role, servicio_publicado
+    ):
+        # secretario NO tiene `inventario.asignar_a_servicio` (mismo permiso
+        # que asignar gobierna el quitar).
+        c = client_for_role(["secretario"])
+        r = c.delete(
+            self._del_vehiculo(servicio_publicado.id, uuid.uuid4())
+        )
+        assert r.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Listar recursos asignados a un servicio (R1 / Opción 1B — GET de lectura)
 # ---------------------------------------------------------------------------
