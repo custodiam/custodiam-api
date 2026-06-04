@@ -416,6 +416,43 @@ class TestMatrizRbacResumida:
 
 
 # ---------------------------------------------------------------------------
+# POST /voluntarios/{id}/reenviar-invitacion (onboarding)
+# ---------------------------------------------------------------------------
+
+
+class TestReenviarInvitacion:
+    def test_reenviar_dispara_email(
+        self, admin_client, fake_keycloak_admin, make_voluntario
+    ):
+        v = make_voluntario(keycloak_id="kc-inv-1", email="inv@example.com")
+        r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 200
+        assert len(fake_keycloak_admin.emails_enviados) == 1
+        assert fake_keycloak_admin.emails_enviados[0]["keycloak_id"] == "kc-inv-1"
+
+    def test_reenviar_voluntario_inexistente_es_404(self, admin_client):
+        r = admin_client.post(f"{BASE}/{uuid.uuid4()}/reenviar-invitacion")
+        assert r.status_code == 404
+
+    def test_reenviar_sin_keycloak_id_es_409(self, admin_client, make_voluntario):
+        v = make_voluntario(keycloak_id=None, email="sinkc@example.com")
+        r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 409
+
+    def test_reenviar_sin_email_es_409(self, admin_client, make_voluntario):
+        v = make_voluntario(keycloak_id="kc-inv-2", email=None)
+        r = admin_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 409
+
+    def test_reenviar_como_voluntario_basico_es_403(
+        self, authenticated_client, make_voluntario
+    ):
+        v = make_voluntario(keycloak_id="kc-inv-3", email="vol@example.com")
+        r = authenticated_client.post(f"{BASE}/{v.id}/reenviar-invitacion")
+        assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # EN-02-05: asignación / baja de roles
 # ---------------------------------------------------------------------------
 

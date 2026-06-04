@@ -138,6 +138,85 @@ class TestAltaCreaUsuarioEnKeycloak:
         assert fake_keycloak_admin.usuarios_creados == []
 
 
+class TestAltaOnboarding:
+    """El alta asigna el rol inicial en Keycloak y envía la invitación."""
+
+    def _alta(self, client):
+        return client.post(
+            BASE,
+            json={
+                "nombre": "Nora Onboarding",
+                "telefono": "+34666000111",
+                "municipio": "Zaragoza",
+                "fecha_nacimiento": "1992-03-03",
+                "email": "nora@example.com",
+            },
+        )
+
+    def test_alta_asigna_rol_inicial_voluntario_practicas(
+        self, admin_client, fake_keycloak_admin
+    ):
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        kc_id = r.json()["keycloak_id"]
+        assert (kc_id, "voluntario_practicas") in fake_keycloak_admin.roles_asignados
+
+    def test_alta_dispara_email_de_invitacion(
+        self, admin_client, fake_keycloak_admin
+    ):
+        r = self._alta(admin_client)
+        assert r.status_code == 201
+        kc_id = r.json()["keycloak_id"]
+        assert len(fake_keycloak_admin.emails_enviados) == 1
+        assert fake_keycloak_admin.emails_enviados[0]["keycloak_id"] == kc_id
+
+    def test_alta_con_fallo_de_rol_es_502_y_compensa_desactivando(self, admin_client):
+        from app.main import app
+        from tests.conftest import FakeKeycloakAdmin
+
+        fake = FakeKeycloakAdmin(fail_on={"rol"})
+        app.dependency_overrides[get_keycloak_admin] = lambda: fake
+        try:
+            r = self._alta(admin_client)
+            assert r.status_code == 502
+            # Rol bloqueante: se compensa desactivando el usuario recién creado.
+            assert len(fake.usuarios_creados) == 1
+            assert fake.usuarios_desactivados == [fake.usuarios_creados[0]["id"]]
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
+    def test_alta_con_fallo_de_rol_no_crea_en_bd(self, admin_client):
+        from app.main import app
+        from tests.conftest import FakeKeycloakAdmin
+
+        app.dependency_overrides[get_keycloak_admin] = lambda: FakeKeycloakAdmin(
+            fail_on={"rol"}
+        )
+        try:
+            assert self._alta(admin_client).status_code == 502
+            # Nada en BD: el reintento sin fallo (mismo email) crea sin 409.
+            app.dependency_overrides[get_keycloak_admin] = lambda: FakeKeycloakAdmin()
+            assert self._alta(admin_client).status_code == 201
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
+    def test_alta_con_fallo_de_email_no_revierte_el_alta(self, admin_client):
+        from app.main import app
+        from tests.conftest import FakeKeycloakAdmin
+
+        fake = FakeKeycloakAdmin(fail_on={"email"})
+        app.dependency_overrides[get_keycloak_admin] = lambda: fake
+        try:
+            r = self._alta(admin_client)
+            # El email es best-effort: el alta NO se revierte si falla.
+            assert r.status_code == 201
+            kc_id = r.json()["keycloak_id"]
+            assert (kc_id, "voluntario_practicas") in fake.roles_asignados
+            assert fake.emails_enviados == []
+        finally:
+            app.dependency_overrides.pop(get_keycloak_admin, None)
+
+
 # ---------------------------------------------------------------------------
 # DELETE /voluntarios/{id}  (soft delete + desactivar en KC)
 # ---------------------------------------------------------------------------

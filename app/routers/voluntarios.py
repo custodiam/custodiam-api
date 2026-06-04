@@ -12,6 +12,7 @@ servicio comparando `keycloak_id` contra el `sub` del JWT.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -40,6 +41,8 @@ from app.services.keycloak_admin import (
 )
 
 router = APIRouter(prefix="/voluntarios", tags=["voluntarios"])
+
+logger = logging.getLogger(__name__)
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -167,16 +170,24 @@ def crear_voluntario(
     ],
 ):
     """Crea un voluntario en BD y, si la Admin API está configurada,
-    también en Keycloak.
+    también en Keycloak, y le envía la invitación de onboarding.
 
-    Orden de operaciones (EN-02-03):
+    Orden de operaciones (EN-02-03 + onboarding):
 
     1. Validar reglas de dominio y unicidad (DNI, email) en BD.
     2. Crear el usuario en Keycloak. Si falla, abortamos sin tocar BD
-       para evitar voluntarios huérfanos sin cuenta. El cliente está
-       diseñado para devolver ``None`` en modo deshabilitado (sin
-       credenciales de admin), en cuyo caso seguimos sin sincronizar.
-    3. Crear el voluntario en BD con el `keycloak_id` recién obtenido.
+       para evitar voluntarios huérfanos sin cuenta. El cliente devuelve
+       ``None`` en modo deshabilitado, en cuyo caso seguimos sin
+       sincronizar.
+    3. Asignar el rol inicial (`voluntario_practicas`) en Keycloak. Es
+       BLOQUEANTE: sin rol el voluntario no tendría permisos. Si falla,
+       compensamos desactivando el usuario recién creado y abortamos sin
+       tocar BD.
+    4. Crear el voluntario en BD con el `keycloak_id` recién obtenido.
+    5. Registrar el rol inicial también en BD (coherencia con la ficha).
+    6. Enviar la invitación de onboarding (set-password) por email. Es
+       best-effort: si falla, el alta NO se revierte; puede reenviarse
+       con `POST /voluntarios/{id}/reenviar-invitacion`.
     """
 
     # 1. Validación previa (sin escribir).
@@ -207,7 +218,27 @@ def crear_voluntario(
             detail=f"Sincronización con Keycloak fallida: {e}",
         ) from e
 
-    # 3. Persistencia en BD.
+    # 3. Rol inicial en Keycloak (bloqueante). Si falla, compensamos
+    #    desactivando el usuario para no dejar una cuenta sin permisos, y
+    #    abortamos sin tocar la BD.
+    if keycloak_id:
+        try:
+            kc_admin.asignar_rol_realm(keycloak_id, service.ROL_INICIAL_PRACTICAS)
+        except KeycloakAdminError as e:
+            try:
+                kc_admin.desactivar_usuario(keycloak_id)
+            except KeycloakAdminError:
+                logger.warning(
+                    "No se pudo compensar (desactivar) el usuario Keycloak %s "
+                    "tras fallar la asignación del rol inicial",
+                    keycloak_id,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Sincronización con Keycloak fallida al asignar el rol inicial: {e}",
+            ) from e
+
+    # 4. Persistencia en BD.
     try:
         v = service.crear(
             session,
@@ -226,11 +257,86 @@ def crear_voluntario(
             detail=f"Email ya registrado: {e}",
         ) from e
 
+    # 5. Registrar el rol inicial en BD (coherencia con la ficha). El rol
+    #    está sembrado en el catálogo; si faltara, no bloqueamos el alta
+    #    (el voluntario ya lo tiene en Keycloak, que es lo que da permisos).
+    try:
+        service.asignar_rol_por_nombre(
+            session,
+            voluntario_id=v.id,
+            nombre_rol=service.ROL_INICIAL_PRACTICAS,
+            actor_keycloak_id=user.sub,
+        )
+    except service.RolNoEncontrado:
+        logger.warning(
+            "El rol inicial %s no está en el catálogo; el voluntario %s "
+            "queda sin rol registrado en BD",
+            service.ROL_INICIAL_PRACTICAS,
+            v.id,
+        )
+
+    # 6. Invitación de onboarding (best-effort): no revierte el alta.
+    if keycloak_id:
+        try:
+            kc_admin.execute_actions_email(keycloak_id)
+        except KeycloakAdminError as e:
+            logger.warning(
+                "No se pudo enviar la invitación de onboarding al voluntario %s: %s",
+                v.id,
+                e,
+            )
+
     # Recargamos con relaciones para que el response_model encuentre las
     # listas vacías y no `MissingGreenlet` al lazy-loadear fuera de la
     # request. En POST son siempre listas vacías porque el voluntario
     # acaba de crearse, pero la serialización las necesita.
     return service.obtener(session, v.id)
+
+
+@router.post(
+    "/{voluntario_id}/reenviar-invitacion",
+    response_model=VoluntarioResponse,
+    summary="Reenviar la invitación de onboarding (set-password)",
+)
+def reenviar_invitacion(
+    voluntario_id: uuid.UUID,
+    session: SessionDep,
+    kc_admin: KeycloakAdminDep,
+    user: Annotated[
+        CurrentUser, Depends(require_permission(Permission.VOLUNTARIOS_EDITAR))
+    ],
+):
+    """Reenvía el email de Keycloak para que el voluntario establezca su
+    contraseña. Útil si el correo original caducó o no llegó. Requiere que
+    el voluntario tenga cuenta en Keycloak y un email donde recibirlo.
+    """
+
+    from app.repositories import voluntarios as repo
+
+    v = repo.get(session, voluntario_id)
+    if v is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voluntario no encontrado: {voluntario_id}",
+        )
+    if not v.keycloak_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El voluntario no tiene cuenta en Keycloak; no se puede invitar.",
+        )
+    if not v.email:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El voluntario no tiene email; no se puede enviar la invitación.",
+        )
+    try:
+        kc_admin.execute_actions_email(v.keycloak_id)
+    except KeycloakAdminError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"No se pudo reenviar la invitación: {e}",
+        ) from e
+    return service.obtener(session, voluntario_id)
 
 
 def _exists_in_db_dni(session: Session, dni: str) -> bool:

@@ -263,6 +263,10 @@ class FakeKeycloakAdmin(KeycloakAdminClient):
     def asignar_rol_realm(  # type: ignore[override]
         self, keycloak_id: str, role_name: str
     ) -> None:
+        if "rol" in self._fail_on:
+            from app.services.keycloak_admin import KeycloakAdminError
+
+            raise KeycloakAdminError("fake_asignar_rol")
         self.roles_asignados.append((keycloak_id, role_name))
 
     def quitar_rol_realm(  # type: ignore[override]

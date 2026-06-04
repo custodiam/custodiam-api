@@ -269,6 +269,12 @@ def get_rol(session: Session, rol_id: uuid.UUID) -> Rol | None:
     return session.get(Rol, rol_id)
 
 
+def get_rol_por_nombre(session: Session, nombre: str) -> Rol | None:
+    """Devuelve un rol del catálogo por su nombre único (o None)."""
+
+    return session.exec(select(Rol).where(Rol.nombre == nombre)).first()
+
+
 def list_roles_catalogo(session: Session) -> list[Rol]:
     """Devuelve todos los roles del catálogo, ordenados por nivel ascendente.
 
