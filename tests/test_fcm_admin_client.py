@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.models.notificacion import PrioridadNotificacion
 from app.services.fcm_admin import (
+    ANDROID_CHANNEL_AVISOS,
+    ANDROID_CHANNEL_EMERGENCIAS,
     FCM_MESSAGES_ENDPOINT,
     GOOGLE_TOKEN_URL,
     FcmAdminClient,
@@ -229,7 +231,10 @@ class TestEnviar:
         msg = captured[0]["message"]
         assert msg["token"] == "t"
         assert msg["android"]["priority"] == "HIGH"
+        assert msg["android"]["notification"]["channel_id"] == ANDROID_CHANNEL_EMERGENCIAS
+        assert msg["android"]["notification"]["sound"] == "default"
         assert msg["apns"]["headers"]["apns-priority"] == "10"
+        assert msg["apns"]["payload"]["aps"]["sound"] == "default"
         assert msg["data"] == {"servicio_id": "abc-123"}
 
     def test_normal_marca_prioridad_normal_en_payload(self, service_account_json):
@@ -252,5 +257,6 @@ class TestEnviar:
         )
         msg = captured[0]["message"]
         assert msg["android"]["priority"] == "NORMAL"
+        assert msg["android"]["notification"]["channel_id"] == ANDROID_CHANNEL_AVISOS
         assert msg["apns"]["headers"]["apns-priority"] == "5"
         assert "data" not in msg
