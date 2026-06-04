@@ -490,6 +490,120 @@ class TestAsignarVehiculoAServicio:
 
 
 # ---------------------------------------------------------------------------
+# Quitar un recurso concreto de un servicio (CU-22 — operación inversa)
+# ---------------------------------------------------------------------------
+
+
+class TestQuitarMaterialDeServicio:
+    """Un mando puede soltar un material de un servicio sin cerrarlo ni
+    borrarlo. Borra la fila de asignación (simétrico a asignar), de modo que
+    el material queda libre y puede eliminarse del inventario."""
+
+    def test_quitar_borra_la_asignacion(
+        self, db_session, servicio_publicado, make_material
+    ):
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=10)
+        a = service.asignar_material_a_servicio(
+            db_session,
+            material_id=m.id,
+            servicio_id=servicio_publicado.id,
+            cantidad=3,
+        )
+        service.quitar_material_de_servicio(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            asignacion_id=a.id,
+        )
+        assert (
+            service.contar_asignaciones_de_servicio(
+                db_session, servicio_publicado.id
+            )
+            == 0
+        )
+
+    def test_quitar_asignacion_inexistente_falla(
+        self, db_session, servicio_publicado
+    ):
+        with pytest.raises(service.AsignacionNoEncontrada):
+            service.quitar_material_de_servicio(
+                db_session,
+                servicio_id=servicio_publicado.id,
+                asignacion_id=uuid.uuid4(),
+            )
+
+    def test_quitar_de_otro_servicio_falla(
+        self, db_session, servicio_publicado, make_servicio, make_material
+    ):
+        from app.models.servicio import EstadoServicio
+
+        m = make_material(tipo=TipoMaterial.SERVICIO, cantidad=10)
+        a = service.asignar_material_a_servicio(
+            db_session,
+            material_id=m.id,
+            servicio_id=servicio_publicado.id,
+            cantidad=1,
+        )
+        otro = make_servicio(estado=EstadoServicio.PUBLICADO)
+        # La asignación existe pero NO pertenece a `otro`: no debe borrarla.
+        with pytest.raises(service.AsignacionNoEncontrada):
+            service.quitar_material_de_servicio(
+                db_session,
+                servicio_id=otro.id,
+                asignacion_id=a.id,
+            )
+        assert (
+            service.contar_asignaciones_de_servicio(
+                db_session, servicio_publicado.id
+            )
+            == 1
+        )
+
+
+class TestQuitarVehiculoDeServicio:
+    def test_quitar_borra_y_libera_el_vehiculo(
+        self, db_session, servicio_publicado, vehiculo
+    ):
+        from app.repositories import inventario as repo
+
+        a = service.asignar_vehiculo_a_servicio(
+            db_session,
+            vehiculo_id=vehiculo.id,
+            servicio_id=servicio_publicado.id,
+        )
+        assert (
+            repo.get_vehiculo(db_session, vehiculo.id).estado
+            == EstadoInventario.EN_USO
+        )
+
+        service.quitar_vehiculo_de_servicio(
+            db_session,
+            servicio_id=servicio_publicado.id,
+            asignacion_id=a.id,
+        )
+        assert (
+            service.contar_asignaciones_de_servicio(
+                db_session, servicio_publicado.id
+            )
+            == 0
+        )
+        # Sin más asignaciones activas, el vehículo vuelve a OPERATIVO.
+        assert (
+            repo.get_vehiculo(db_session, vehiculo.id).estado
+            == EstadoInventario.OPERATIVO
+        )
+
+    def test_quitar_asignacion_inexistente_falla(
+        self, db_session, servicio_publicado
+    ):
+        with pytest.raises(service.AsignacionNoEncontrada):
+            service.quitar_vehiculo_de_servicio(
+                db_session,
+                servicio_id=servicio_publicado.id,
+                asignacion_id=uuid.uuid4(),
+            )
+
+
+# ---------------------------------------------------------------------------
 # Liberación automática al cerrar servicio (E03 → E05)
 # ---------------------------------------------------------------------------
 
