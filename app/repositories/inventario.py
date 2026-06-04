@@ -518,6 +518,26 @@ def get_asignacion_vehiculo(
     return session.get(AsignacionVehiculo, asignacion_id)
 
 
+def count_asignaciones_activas_vehiculo(
+    session: Session, vehiculo_id: uuid.UUID
+) -> int:
+    """Cuenta las asignaciones a servicio ACTIVAS (sin devolver) del vehículo.
+
+    Soporta la liberación de estado al quitar una asignación de un servicio:
+    si tras borrarla no le queda ninguna activa, el vehículo vuelve a
+    OPERATIVO (un vehículo puede estar reservado por varios servicios de
+    intervalos disjuntos, así que no basta con asumir una sola)."""
+
+    return int(
+        session.exec(
+            select(func.count()).where(
+                AsignacionVehiculo.vehiculo_id == vehiculo_id,
+                AsignacionVehiculo.fecha_devolucion.is_(None),
+            )
+        ).one()
+    )
+
+
 def get_asignacion_activa_vehiculo(
     session: Session, vehiculo_id: uuid.UUID
 ) -> AsignacionVehiculo | None:

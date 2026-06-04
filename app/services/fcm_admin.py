@@ -47,6 +47,16 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 FCM_MESSAGES_ENDPOINT = "https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 
+# Canales de notificación de Android (API 26+). El sonido, la vibración y
+# el comportamiento heads-up se fijan a nivel de canal en el dispositivo,
+# no por mensaje, así que el push solo elige a QUÉ canal va. Estos ids
+# deben coincidir EXACTAMENTE con los canales creados por el cliente
+# Flutter y con el `default_notification_channel_id` de su manifest, o el
+# sistema cae al canal por defecto (sin heads-up) cuando la app está en
+# background/cerrada.
+ANDROID_CHANNEL_EMERGENCIAS = "custodiam_emergencias"
+ANDROID_CHANNEL_AVISOS = "custodiam_avisos"
+
 
 class FcmAdminError(Exception):
     """El backend de FCM devolvió un error 5xx o fue inalcanzable."""
@@ -278,19 +288,36 @@ class FcmAdminClient:
         Mapea :class:`PrioridadNotificacion` al campo ``android.priority``
         y al header ``apns-priority`` para iOS. ``critica`` y ``alta``
         son ``HIGH``/``10``; ``normal`` y ``baja`` son ``NORMAL``/``5``.
+
+        Además fija el canal de Android (``android.notification.channel_id``)
+        según la prioridad: las emergencias van al canal de máxima
+        importancia (heads-up + sonido garantizado incluso con la app en
+        background o cerrada), el resto al canal de avisos. El sonido por
+        defecto se solicita en ambas plataformas; en Android 8+ el sonido
+        efectivo lo determina la configuración del canal en el cliente, no
+        este campo, pero se incluye por compatibilidad con versiones
+        anteriores.
         """
 
         es_alta = prioridad in (
             PrioridadNotificacion.CRITICA,
             PrioridadNotificacion.ALTA,
         )
+        channel_id = ANDROID_CHANNEL_EMERGENCIAS if es_alta else ANDROID_CHANNEL_AVISOS
         mensaje: dict[str, Any] = {
             "message": {
                 "token": token,
                 "notification": {"title": titulo, "body": cuerpo},
-                "android": {"priority": "HIGH" if es_alta else "NORMAL"},
+                "android": {
+                    "priority": "HIGH" if es_alta else "NORMAL",
+                    "notification": {
+                        "channel_id": channel_id,
+                        "sound": "default",
+                    },
+                },
                 "apns": {
-                    "headers": {"apns-priority": "10" if es_alta else "5"}
+                    "headers": {"apns-priority": "10" if es_alta else "5"},
+                    "payload": {"aps": {"sound": "default"}},
                 },
             }
         }

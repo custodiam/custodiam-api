@@ -1135,6 +1135,71 @@ def asignar_vehiculo_a_servicio(
     return asignacion
 
 
+def quitar_material_de_servicio(
+    session: Session, *, servicio_id: uuid.UUID, asignacion_id: uuid.UUID
+) -> None:
+    """Quita un material de un servicio (operación inversa de asignar).
+
+    Borra la fila de asignación —no la cierra con histórico—, de modo que las
+    unidades vuelven a quedar libres y el material puede eliminarse del
+    inventario si no le queda ninguna otra asignación. Sirve para corregir un
+    error de asignación sin tener que cerrar ni borrar el servicio. La
+    asignación debe pertenecer al servicio indicado o se trata como
+    inexistente (``AsignacionNoEncontrada`` → 404). El material de servicio es
+    stock y no cambia de estado al asignarse, así que aquí no hay estado que
+    liberar.
+    """
+
+    asignacion = repo.get_asignacion_material(session, asignacion_id)
+    if asignacion is None or asignacion.servicio_id != servicio_id:
+        raise AsignacionNoEncontrada(
+            f"asignación de material {asignacion_id} no encontrada en el "
+            f"servicio {servicio_id}"
+        )
+    try:
+        session.delete(asignacion)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
+def quitar_vehiculo_de_servicio(
+    session: Session, *, servicio_id: uuid.UUID, asignacion_id: uuid.UUID
+) -> None:
+    """Quita un vehículo de un servicio (operación inversa de asignar).
+
+    Borra la fila de asignación y, si al vehículo no le queda ninguna otra
+    asignación activa, lo devuelve a OPERATIVO. La asignación debe pertenecer
+    al servicio indicado (``AsignacionNoEncontrada`` → 404). Atómico: un solo
+    commit, con rollback ante cualquier fallo.
+    """
+
+    asignacion = repo.get_asignacion_vehiculo(session, asignacion_id)
+    if asignacion is None or asignacion.servicio_id != servicio_id:
+        raise AsignacionNoEncontrada(
+            f"asignación de vehículo {asignacion_id} no encontrada en el "
+            f"servicio {servicio_id}"
+        )
+    vehiculo_id = asignacion.vehiculo_id
+    try:
+        session.delete(asignacion)
+        session.flush()
+        vehiculo = repo.get_vehiculo(session, vehiculo_id)
+        if (
+            vehiculo is not None
+            and vehiculo.estado == EstadoInventario.EN_USO
+            and repo.count_asignaciones_activas_vehiculo(session, vehiculo_id)
+            == 0
+        ):
+            vehiculo.estado = EstadoInventario.OPERATIVO
+            session.add(vehiculo)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
 def contar_asignaciones_de_servicio(
     session: Session, servicio_id: uuid.UUID
 ) -> int:

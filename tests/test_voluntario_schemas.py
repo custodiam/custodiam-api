@@ -1,6 +1,6 @@
 """Tests de schemas Pydantic de Voluntario (EN-02-01, ADR-025)."""
 
-from datetime import date
+from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
@@ -25,10 +25,34 @@ class TestVoluntarioCreate:
             telefono="+34666123456",
             municipio="Zaragoza",
             fecha_nacimiento=date(1990, 5, 12),
+            email="ana@example.com",
         )
         assert v.nombre == "Ana García"
         assert v.municipio == "Zaragoza"
+        assert v.email == "ana@example.com"
         assert v.conductor_habilitado is False  # default
+
+    def test_alta_sin_email_falla(self):
+        # Email es obligatorio en el alta (es la llave del onboarding).
+        with pytest.raises(ValidationError) as exc:
+            VoluntarioCreate(
+                nombre="Ana García",
+                telefono="+34666123456",
+                municipio="Zaragoza",
+                fecha_nacimiento=date(1990, 5, 12),
+            )
+        assert any(e["loc"] == ("email",) for e in exc.value.errors())
+
+    def test_fecha_nacimiento_futura_falla(self):
+        with pytest.raises(ValidationError) as exc:
+            VoluntarioCreate(
+                nombre="Ana García",
+                telefono="+34666123456",
+                municipio="Zaragoza",
+                fecha_nacimiento=date.today() + timedelta(days=1),
+                email="ana@example.com",
+            )
+        assert any(e["loc"] == ("fecha_nacimiento",) for e in exc.value.errors())
 
     def test_alta_con_todos_los_opcionales(self):
         v = VoluntarioCreate(

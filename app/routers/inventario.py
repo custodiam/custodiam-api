@@ -1093,6 +1093,71 @@ def asignar_vehiculo_servicio(
     return _asignacion_vehiculo_to_response(asignacion)
 
 
+@servicio_router.delete(
+    "/material/{asignacion_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Quitar un material de un servicio (CU-22, inversa de asignar)",
+)
+def quitar_material_servicio(
+    servicio_id: uuid.UUID,
+    asignacion_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.INVENTARIO_ASIGNAR_A_SERVICIO)),
+    ],
+):
+    """Suelta un material de un servicio (mismo permiso que asignarlo).
+
+    Borra la fila de asignación, dejando libres las unidades. Si la asignación
+    no existe o no pertenece a este servicio, devuelve 404.
+    """
+
+    try:
+        service.quitar_material_de_servicio(
+            session, servicio_id=servicio_id, asignacion_id=asignacion_id
+        )
+    except service.AsignacionNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@servicio_router.delete(
+    "/vehiculo/{asignacion_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Quitar un vehículo de un servicio (CU-22, inversa de asignar)",
+)
+def quitar_vehiculo_servicio(
+    servicio_id: uuid.UUID,
+    asignacion_id: uuid.UUID,
+    session: SessionDep,
+    _: Annotated[
+        CurrentUser,
+        Depends(require_permission(Permission.INVENTARIO_ASIGNAR_A_SERVICIO)),
+    ],
+):
+    """Suelta un vehículo de un servicio (mismo permiso que asignarlo).
+
+    Borra la fila de asignación y libera el vehículo a OPERATIVO si no le
+    queda otra asignación activa. 404 si la asignación no pertenece al
+    servicio.
+    """
+
+    try:
+        service.quitar_vehiculo_de_servicio(
+            session, servicio_id=servicio_id, asignacion_id=asignacion_id
+        )
+    except service.AsignacionNoEncontrada as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @servicio_router.get(
     "",
     response_model=InventarioServicioResponse,

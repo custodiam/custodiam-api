@@ -196,3 +196,92 @@ class TestAsignarRolRealm:
         client.asignar_rol_realm("kc-id", "voluntario")
         # 1 token + 1 GET rol + 1 POST mappings.
         assert len(recorded) == 3
+
+
+class TestExecuteActionsEmail:
+    def test_modo_deshabilitado_devuelve_none_sin_request(self):
+        calls: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(500)
+
+        client = _make_client(handler, admin_password="")
+        assert client.execute_actions_email("kc-id") is None
+        assert calls == []
+
+    def test_envio_ok_usa_put_con_actions_client_id_y_lifespan(self):
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(TOKEN_URL):
+                return httpx.Response(
+                    200, json={"access_token": "tok", "expires_in": 60}
+                )
+            captured["method"] = request.method
+            captured["path"] = request.url.path
+            captured["params"] = dict(request.url.params)
+            captured["body"] = request.content
+            return httpx.Response(204)
+
+        client = _make_client(handler)
+        client.execute_actions_email("kc-abc")
+
+        import json
+
+        assert captured["method"] == "PUT"
+        assert captured["path"].endswith("/users/kc-abc/execute-actions-email")
+        # client_id por defecto = cliente público de la app; lifespan 24 h.
+        assert captured["params"]["client_id"] == "custodiam-app"
+        assert captured["params"]["lifespan"] == "86400"
+        assert json.loads(captured["body"]) == ["VERIFY_EMAIL", "UPDATE_PASSWORD"]
+
+    def test_overrides_actions_client_id_y_lifespan(self):
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(TOKEN_URL):
+                return httpx.Response(
+                    200, json={"access_token": "tok", "expires_in": 60}
+                )
+            captured["params"] = dict(request.url.params)
+            captured["body"] = request.content
+            return httpx.Response(204)
+
+        client = _make_client(handler)
+        client.execute_actions_email(
+            "kc-abc",
+            actions=["UPDATE_PASSWORD"],
+            client_id="otro-cliente",
+            lifespan_seconds=3600,
+        )
+
+        import json
+
+        assert captured["params"]["client_id"] == "otro-cliente"
+        assert captured["params"]["lifespan"] == "3600"
+        assert json.loads(captured["body"]) == ["UPDATE_PASSWORD"]
+
+    def test_usuario_inexistente_404_lanza_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(TOKEN_URL):
+                return httpx.Response(
+                    200, json={"access_token": "tok", "expires_in": 60}
+                )
+            return httpx.Response(404)
+
+        client = _make_client(handler)
+        with pytest.raises(KeycloakAdminError):
+            client.execute_actions_email("kc-fantasma")
+
+    def test_respuesta_inesperada_lanza_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(TOKEN_URL):
+                return httpx.Response(
+                    200, json={"access_token": "tok", "expires_in": 60}
+                )
+            return httpx.Response(500, text="boom")
+
+        client = _make_client(handler)
+        with pytest.raises(KeycloakAdminError):
+            client.execute_actions_email("kc-x")

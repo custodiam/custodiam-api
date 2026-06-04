@@ -34,6 +34,11 @@ class TestCrear:
             fecha_nacimiento=date(1995, 1, 15),
         )
         base.update(overrides)
+        # Email obligatorio en el alta; derivado del nombre para que dos
+        # payloads con nombres distintos no choquen con el UNIQUE de email.
+        base.setdefault(
+            "email", f"{base['nombre'].replace(' ', '.').lower()}@example.com"
+        )
         return VoluntarioCreate(**base)
 
     def test_crear_persiste_voluntario_activo_con_fecha_alta_inyectada(self, db_session):
