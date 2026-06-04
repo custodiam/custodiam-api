@@ -220,6 +220,7 @@ class FakeKeycloakAdmin(KeycloakAdminClient):
         self.usuarios_desactivados: list[str] = []
         self.roles_asignados: list[tuple[str, str]] = []
         self.roles_revocados: list[tuple[str, str]] = []
+        self.emails_enviados: list[dict] = []
         self._next_kc_id = 1
 
     @property
@@ -268,6 +269,27 @@ class FakeKeycloakAdmin(KeycloakAdminClient):
         self, keycloak_id: str, role_name: str
     ) -> None:
         self.roles_revocados.append((keycloak_id, role_name))
+
+    def execute_actions_email(  # type: ignore[override]
+        self,
+        keycloak_id: str,
+        *,
+        actions: list[str] | None = None,
+        client_id: str | None = None,
+        lifespan_seconds: int | None = None,
+    ) -> None:
+        if "email" in self._fail_on:
+            from app.services.keycloak_admin import KeycloakAdminError
+
+            raise KeycloakAdminError("fake_execute_actions_email")
+        self.emails_enviados.append(
+            {
+                "keycloak_id": keycloak_id,
+                "actions": actions or ["VERIFY_EMAIL", "UPDATE_PASSWORD"],
+                "client_id": client_id,
+                "lifespan_seconds": lifespan_seconds,
+            }
+        )
 
 
 @pytest.fixture
